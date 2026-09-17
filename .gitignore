@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code 本地设置
+.claude/settings.local.json
+
+# 运行时产物
+*.db
+*.db-wal
+*.db-shm
+*.log
+logs/
+worktrees/
+repos/
+contexts/

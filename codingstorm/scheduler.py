@@ -140,9 +140,7 @@ class Scheduler:
         task_id = row["id"]
         project = await self.store.get_project(row["project_id"])
         if project is None:
-            await self.store.set_status(
-                task_id, TaskStatus.FAILED, error_text="项目不存在"
-            )
+            await self.store.set_status(task_id, TaskStatus.FAILED, error_text="项目不存在")
             return
 
         task = await self.store.get_task(task_id)
@@ -152,9 +150,28 @@ class Scheduler:
         attempt_no = await self.store.next_attempt_no(task_id)
         await self.store.start_attempt(task_id, attempt_no)
         outcome = RunOutcome()
+        workspace = None
 
         try:
-            workspace = await self.workspaces.prepare(project.name, project.repo_path, task_id)
+            workspace = await self.workspaces.prepare(
+                project_name=project.name,
+                repo_path=project.repo_path,
+                target_branch=project.target_branch,
+                task_id=task_id,
+                title=task.title,
+            )
+            # 只更新字段，不重写 status —— claim_next 已经置为 running 了，
+            # 在这里再写一次会把并发的 interrupted 覆盖回 running。
+            await self.store.update_fields(
+                task_id,
+                branch=workspace.branch,
+                worktree_path=str(workspace.path),
+                base_commit=workspace.base_commit,
+            )
+            fresh = await self.store.get_task(task_id)
+            if fresh is None or fresh.status != TaskStatus.RUNNING:
+                log.info("任务 %s 在准备阶段被中断，放弃执行", task_id)
+                return
             outcome = await self.runner.run(
                 task_id,
                 project.name,
@@ -164,9 +181,7 @@ class Scheduler:
                 attempt_no=attempt_no,
             )
         except asyncio.CancelledError:
-            await self.store.set_status(
-                task_id, TaskStatus.INTERRUPTED, error_text="任务被取消"
-            )
+            await self.store.set_status(task_id, TaskStatus.INTERRUPTED, error_text="任务被取消")
             raise
         except Exception as exc:
             log.exception("任务 %s 执行异常", task_id)
@@ -193,11 +208,44 @@ class Scheduler:
             model=outcome.model,
         )
 
-        if outcome.ok:
-            # Phase 2 起：在这里提交改动、推进分支、生成 diff
-            await self.store.set_status(task_id, TaskStatus.AWAITING_REVIEW)
-            log.info("任务 %s 完成，等待审查", task_id)
-        else:
+        if not outcome.ok:
             reason = outcome.error_text or f"执行失败（subtype={outcome.result_subtype}）"
             await self.store.set_status(task_id, TaskStatus.FAILED, error_text=reason)
             log.warning("任务 %s 失败: %s", task_id, reason)
+            return
+
+        await self._finalize_success(task_id, task, workspace)
+
+    async def _finalize_success(self, task_id: str, task, workspace) -> None:
+        """提交改动、rebase 到最新 target、置为待审。
+
+        失败**不删工作区** —— 现场要留着排查。
+        """
+        try:
+            result = await self.workspaces.finalize(
+                workspace, message=f"{task.title}\n\ncodingstorm-task: {task_id}"
+            )
+        except Exception as exc:
+            log.exception("任务 %s 收尾失败", task_id)
+            await self.store.set_status(task_id, TaskStatus.FAILED, error_text=f"收尾失败: {exc}")
+            return
+
+        if result.rebase_conflict:
+            log.warning("任务 %s 的分支与 %s 有冲突", task_id, workspace.target_branch)
+            await self.store.set_status(
+                task_id,
+                TaskStatus.AWAITING_REVIEW,
+                commit_sha=result.commit_sha,
+                error_text=f"分支与 {workspace.target_branch} 有 rebase 冲突，合入前需人工处理",
+            )
+            return
+
+        await self.store.set_status(
+            task_id, TaskStatus.AWAITING_REVIEW, commit_sha=result.commit_sha
+        )
+        log.info(
+            "任务 %s 完成，等待审查（%s，%s）",
+            task_id,
+            workspace.branch,
+            "有改动" if result.had_changes else "无改动",
+        )

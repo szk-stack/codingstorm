@@ -38,11 +38,10 @@ class FakeRunner:
 
 
 @pytest.fixture
-def env(tmp_path: Path):
+def env(tmp_path: Path, make_repo):
     cfg = Config(root=tmp_path / "root")
     cfg.ensure_dirs()
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = make_repo()
 
     db = Database(tmp_path / "test.db")
     db.start()

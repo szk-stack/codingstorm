@@ -140,6 +140,19 @@ class Store:
             (utcnow(),),
         )
 
+    async def update_fields(self, task_id: str, **fields: Any) -> None:
+        """只更新字段，**不碰 status**。
+
+        需要这个是因为 `claim_next` 已经把状态置为 running 了，执行过程中再写一次
+        status 会覆盖掉并发的状态变更（比如 stop() 刚写入的 interrupted）。
+        """
+        if not fields:
+            return
+        sets = [f"{key} = ?" for key in fields]
+        params = list(fields.values())
+        params.append(task_id)
+        await self.db.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", params)
+
     async def set_status(self, task_id: str, status: TaskStatus, **fields: Any) -> None:
         sets = ["status = ?"]
         params: list[Any] = [str(status)]

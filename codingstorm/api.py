@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 
+from codingstorm.diff_render import render_diff
 from codingstorm.models import (
     AttemptOut,
     ProjectCreate,
@@ -19,6 +22,14 @@ from codingstorm.store import Store
 from codingstorm.workspace import RebaseConflict, Workspace
 
 router = APIRouter(prefix="/api")
+pages = APIRouter()
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+# 实时推送的合批间隔。逐条推会打爆浏览器，10fps 肉眼已经完全流畅。
+WS_FLUSH_INTERVAL_S = 0.1
+# 状态轮询间隔。事件可能因为队列满被丢，状态得有个兜底通道保证最终一致。
+WS_STATUS_POLL_S = 2.0
 
 
 def _store(request: Request) -> Store:
@@ -169,8 +180,11 @@ async def get_diff(request: Request, task_id: str) -> dict:
     _, raw, workspace = await _workspace_for(request, task_id)
     wm = request.app.state.workspaces
     try:
+        text = await wm.diff(workspace)
         return {
-            "diff": await wm.diff(workspace),
+            "diff": text,
+            # 服务端渲染好，前端直接塞进 DOM —— 不依赖任何 CDN（执行机在国内）
+            "html": render_diff(text),
             "stat": await wm.diff_stat(workspace),
             "base": workspace.target_branch,
             "branch": workspace.branch,
@@ -227,3 +241,95 @@ async def discard_task(request: Request, task_id: str) -> TaskOut:
     refreshed = await store.get_task(task_id)
     assert refreshed is not None
     return refreshed
+
+
+# ---------- 页面 ----------
+
+
+@pages.get("/")
+async def index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+# ---------- 实时推送 ----------
+
+
+async def _drain_client(websocket: WebSocket) -> None:
+    """前端不发消息，但必须有人在收 —— 否则客户端断开时我们察觉不到。"""
+    try:
+        while True:
+            await websocket.receive_text()
+    except (WebSocketDisconnect, RuntimeError):
+        return
+
+
+@router.websocket("/ws/tasks/{task_id}")
+async def ws_task(websocket: WebSocket, task_id: str, after_seq: int = -1) -> None:
+    await websocket.accept()
+    app = websocket.app
+    store: Store = app.state.store
+    bus = app.state.bus
+    loop = asyncio.get_running_loop()
+
+    task = await store.get_task(task_id)
+    if task is None:
+        await websocket.send_json({"kind": "error", "message": "任务不存在"})
+        await websocket.close()
+        return
+
+    # 先订阅再读历史 —— 反过来的话，两者之间产生的事件会永久丢失。
+    # 重复的由客户端按 seq 去重。
+    queue = bus.subscribe(task_id)
+
+    try:
+        await websocket.send_json({"kind": "snapshot", "task": task.model_dump()})
+
+        # 补历史事件，这样刷新页面不会丢上下文
+        for row in await store.list_events(task_id, after_seq=after_seq, limit=5000):
+            await websocket.send_json({
+                "kind": "event",
+                "seq": row["seq"],
+                "ts": row["ts"],
+                "type": row["type"],
+                "payload": json.loads(row["payload"]) if row["payload"] else None,
+            })
+    except (WebSocketDisconnect, RuntimeError):
+        bus.unsubscribe(task_id, queue)
+        return
+
+    receiver = asyncio.create_task(_drain_client(websocket))
+    last_status = task.status
+    pending: list[dict] = []
+    last_flush = loop.time()
+    last_poll = loop.time()
+
+    try:
+        while True:
+            try:
+                msg = await asyncio.wait_for(queue.get(), timeout=WS_FLUSH_INTERVAL_S)
+                pending.append(msg)
+            except TimeoutError:
+                pass
+
+            now = loop.time()
+            if pending and now - last_flush >= WS_FLUSH_INTERVAL_S:
+                await websocket.send_json({"kind": "events", "events": pending})
+                pending.clear()
+                last_flush = now
+
+            # 事件可能因队列满被丢，状态得有条兜底通道保证最终一致
+            if now - last_poll >= WS_STATUS_POLL_S:
+                last_poll = now
+                fresh = await store.get_task(task_id)
+                if fresh is not None and fresh.status != last_status:
+                    last_status = fresh.status
+                    await websocket.send_json({
+                        "kind": "status",
+                        "status": fresh.status,
+                        "task": fresh.model_dump(),
+                    })
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        receiver.cancel()
+        bus.unsubscribe(task_id, queue)

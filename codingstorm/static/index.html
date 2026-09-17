@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>codingstorm</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <h1>codingstorm</h1>
+  <div class="topbar-right">
+    <span id="conn" class="conn">未连接</span>
+  </div>
+</header>
+
+<main class="layout">
+
+  <aside class="sidebar">
+    <section class="panel">
+      <h2>项目</h2>
+      <ul id="projects" class="list"></ul>
+      <form id="project-form" class="inline-form">
+        <input name="name" placeholder="项目名" required pattern="[A-Za-z0-9._-]+">
+        <input name="repo_path" placeholder="仓库路径（建议裸仓库）" required>
+        <input name="target_branch" placeholder="主干分支" value="main">
+        <button type="submit">注册</button>
+      </form>
+    </section>
+  </aside>
+
+  <section class="content">
+    <div class="panel">
+      <div class="panel-head">
+        <h2 id="queue-title">任务队列</h2>
+        <span id="queue-count" class="muted"></span>
+      </div>
+      <ul id="tasks" class="list tasks"></ul>
+    </div>
+
+    <div class="panel" id="detail-panel" hidden>
+      <div class="panel-head">
+        <h2 id="detail-title">任务详情</h2>
+        <span id="detail-status" class="badge"></span>
+      </div>
+
+      <div class="detail-meta" id="detail-meta"></div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="output">执行过程</button>
+        <button class="tab" data-tab="diff">改动</button>
+      </div>
+
+      <div class="tabpane" id="pane-output">
+        <div class="progress" id="progress" hidden></div>
+        <div class="stream" id="stream"></div>
+      </div>
+
+      <div class="tabpane" id="pane-diff" hidden>
+        <div class="diff-stat" id="diff-stat"></div>
+        <div class="diff-body" id="diff-body"></div>
+      </div>
+
+      <div class="actions" id="actions"></div>
+    </div>
+  </section>
+
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -9,10 +9,12 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
-from codingstorm.api import router
+from codingstorm.api import STATIC_DIR, pages, router
 from codingstorm.config import Config
 from codingstorm.db import Database
+from codingstorm.events import EventBus
 from codingstorm.runner import Runner
 from codingstorm.scheduler import Scheduler
 from codingstorm.store import Store
@@ -28,13 +30,21 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
         db = Database(config.db_path)
         db.start()
         store = Store(db)
-        runner = Runner(config, store)
+        bus = EventBus()
+
+        async def on_event(event: dict) -> None:
+            task_id = event.pop("task_id", None)
+            if task_id:
+                bus.publish(task_id, event)
+
+        runner = Runner(config, store, on_event=on_event)
         workspaces = WorkspaceManager(config)
         scheduler = Scheduler(config, store, runner, workspaces)
 
         app.state.config = config
         app.state.db = db
         app.state.store = store
+        app.state.bus = bus
         app.state.runner = runner
         app.state.workspaces = workspaces
         app.state.scheduler = scheduler
@@ -56,6 +66,9 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
     app = FastAPI(title="codingstorm", lifespan=lifespan)
     app.state.config = config
     app.include_router(router)
+    app.include_router(pages)
+    if STATIC_DIR.is_dir():
+        app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app
 
 

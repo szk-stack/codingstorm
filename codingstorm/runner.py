@@ -134,6 +134,8 @@ class Runner:
         self._procs: dict[str, asyncio.subprocess.Process] = {}
         # 每任务的事件序号，在内存里自增（见 _emit 的说明）
         self._seq: dict[str, int] = {}
+        # 每任务上次推送 thinking 进度的时刻，用于限流
+        self._progress_at: dict[str, float] = {}
 
     # ---------- 命令行 ----------
 
@@ -208,6 +210,7 @@ class Runner:
             finally:
                 self._procs.pop(task_id, None)
                 self._seq.pop(task_id, None)
+                self._progress_at.pop(task_id, None)
 
         outcome.exit_code = proc.returncode
         if not outcome.saw_result:
@@ -376,9 +379,24 @@ class Runner:
                     })
             return
 
-        # thinking_tokens / stream_event / 其他：不落库，只转发给实时订阅者
-        if self.on_event is not None:
-            await self.on_event({"task_id": task_id, "type": etype, "subtype": subtype, "raw": event})
+        # thinking_tokens 每秒最多推一次进度；stream_event 完全不推。
+        # 实测 thinking_tokens 占事件量的 99.6%，逐条转发会淹掉队列、
+        # 把 result 这类关键事件挤丢。
+        if etype == "system" and subtype == "thinking_tokens":
+            if self.on_event is not None:
+                now = asyncio.get_running_loop().time()
+                last = self._progress_at.get(task_id, 0.0)
+                if now - last >= 1.0:
+                    self._progress_at[task_id] = now
+                    await self.on_event({
+                        "task_id": task_id,
+                        "type": "progress",
+                        "thinking_tokens": event.get("estimated_tokens") or 0,
+                    })
+            return
+
+        if etype == "stream_event":
+            return
 
     @staticmethod
     def _absorb_result(event: dict[str, Any], outcome: RunOutcome) -> None:

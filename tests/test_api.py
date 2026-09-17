@@ -127,6 +127,50 @@ def test_task_out_exposes_git_fields(client: TestClient):
         assert field in task, f"TaskOut 缺少字段 {field}"
 
 
+def test_context_endpoints(client: TestClient):
+    p = _mk_project(client)
+
+    got = client.get(f"/api/projects/{p['id']}/context").json()
+    assert "pointer" in got and got["pointer_soft_limit"] > 0
+    assert got["docs"], "应当已经生成了 INDEX.md 模板"
+
+    # 改指针图
+    updated = client.put(
+        f"/api/projects/{p['id']}/context/pointer",
+        json={"text": "# 约定\n\n跑 `pytest -q`\n"},
+    ).json()
+    assert "pytest -q" in updated["pointer"]
+    assert updated["pointer_bytes"] > 0
+
+    # 文档增删改查
+    client.put(f"/api/projects/{p['id']}/context/docs/api.md", json={"text": "# 接口\n"})
+    doc = client.get(f"/api/projects/{p['id']}/context/docs/api.md").json()
+    assert doc["text"] == "# 接口\n"
+
+    paths = {d["path"] for d in client.get(f"/api/projects/{p['id']}/context").json()["docs"]}
+    assert "api.md" in paths
+
+    assert client.delete(f"/api/projects/{p['id']}/context/docs/api.md").status_code == 204
+    assert client.get(f"/api/projects/{p['id']}/context/docs/api.md").status_code == 404
+
+
+def test_context_doc_path_traversal_rejected(client: TestClient):
+    """文档路径来自 HTTP，必须挡住越界。"""
+    p = _mk_project(client)
+    r = client.put(
+        f"/api/projects/{p['id']}/context/docs/..%2F..%2Fevil.md",
+        json={"text": "x"},
+    )
+    assert r.status_code in (400, 404)
+    # 确认没有真的写出去
+    root = client.app.state.config.contexts_dir
+    assert not (root.parent / "evil.md").exists()
+
+
+def test_context_unknown_project_404(client: TestClient):
+    assert client.get("/api/projects/nope/context").status_code == 404
+
+
 def test_scheduler_not_started_in_tests(client: TestClient):
     """start_scheduler=False 时不应有调度循环在跑。"""
     scheduler = client.app.state.scheduler  # type: ignore[attr-defined]

@@ -28,6 +28,51 @@
         <button type="submit">注册</button>
       </form>
     </section>
+
+    <section class="panel" id="context-panel" hidden>
+      <div class="panel-head">
+        <h2>项目上下文</h2>
+        <span id="ctx-bytes" class="muted"></span>
+      </div>
+      <div class="tabs small">
+        <button class="ctab active" data-ctab="pointer">指针图</button>
+        <button class="ctab" data-ctab="journal">变更记录</button>
+        <button class="ctab" data-ctab="docs">文档</button>
+      </div>
+
+      <div id="ctx-pointer">
+        <p class="hint">
+          每次任务无条件注入。只写四类内容：带参数的命令、非显然约束、
+          专有工具用法、硬规则。<b>不要写「项目是做什么的」</b>——实测会拖低表现。
+          注释不会占 token。
+        </p>
+        <textarea id="pointer-text" rows="10" spellcheck="false"></textarea>
+        <button id="pointer-save">保存</button>
+      </div>
+
+      <div id="ctx-journal" hidden>
+        <pre id="journal-text" class="pre"></pre>
+      </div>
+
+      <div id="ctx-docs" hidden>
+        <div id="doc-browse">
+          <ul id="doc-list" class="list"></ul>
+          <form id="doc-form" class="inline-form">
+            <input name="path" placeholder="文件名，如 api.md">
+            <button type="submit">新建文档</button>
+          </form>
+        </div>
+        <div id="doc-editor" hidden>
+          <div id="doc-editor-title" class="muted"></div>
+          <textarea id="doc-text" rows="14" spellcheck="false"></textarea>
+          <div class="row">
+            <button id="doc-save">保存</button>
+            <button id="doc-cancel" class="ghost">返回</button>
+            <button id="doc-delete" class="danger">删除</button>
+          </div>
+        </div>
+      </div>
+    </section>
   </aside>
 
   <section class="content">

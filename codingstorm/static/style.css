@@ -149,6 +149,28 @@ button.danger { background: #fff; color: var(--del-fg); border-color: #fca5a5; }
   font-weight: 500;
 }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tabs.small .tab { padding: 4px 6px; font-size: 12px; }
+
+.hint { font-size: 11.5px; color: var(--muted); margin: 0 0 8px; line-height: 1.5; }
+.pre {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
+  overflow: auto;
+  margin: 0;
+  color: var(--text);
+}
+#pointer-text, #doc-text {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 12px;
+  resize: vertical;
+  margin-bottom: 8px;
+}
+.row { display: flex; gap: 6px; }
+#doc-editor-title { font-family: var(--mono); font-size: 11.5px; margin-bottom: 6px; }
 
 .actions { display: flex; gap: 8px; margin-top: 14px; }
 

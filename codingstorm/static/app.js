@@ -128,6 +128,7 @@ async function selectProject(id) {
   const project = state.projects.find((p) => p.id === id);
   $('#queue-title').textContent = project ? `${project.name} 的任务` : '任务队列';
   await loadTasks();
+  await loadContext();
 }
 
 async function loadTasks() {
@@ -229,6 +230,7 @@ async function openTask(id, tab = 'output') {
 
   renderDetail();
   await loadTasks();
+  await loadContext();
   switchTab(tab);
   writeHash(id, tab);
   connectWs(id);
@@ -335,6 +337,128 @@ async function loadDiff() {
     box.replaceChildren(el('div', { html: d.html }));
   } catch (err) {
     box.replaceChildren(el('div', { class: 'ev ev-error', text: `加载 diff 失败：${err.message}` }));
+  }
+}
+
+// ---------------- 项目上下文 ----------------
+
+let ctxData = null;
+let editingDoc = null;
+
+async function loadContext() {
+  if (!state.projectId) {
+    $('#context-panel').hidden = true;
+    ctxData = null;
+    return;
+  }
+  try {
+    ctxData = await api(`/api/projects/${state.projectId}/context`);
+  } catch (err) {
+    toast(`加载上下文失败：${err.message}`, true);
+    return;
+  }
+  renderContext();
+}
+
+function renderContext() {
+  if (!ctxData) return;
+  $('#context-panel').hidden = false;
+
+  const bytes = ctxData.pointer_bytes;
+  const limit = ctxData.pointer_soft_limit;
+  const tag = $('#ctx-bytes');
+  tag.textContent = `${bytes} / ${limit} 字节`;
+  tag.style.color = bytes > limit ? 'var(--del-fg)' : '';
+  tag.title = bytes > limit ? '超过软上限了 —— 多半是把「介绍性内容」也写了进去' : '';
+
+  $('#pointer-text').value = ctxData.pointer;
+  $('#journal-text').textContent = ctxData.journal;
+  showDocBrowse();
+  renderDocs();
+}
+
+function renderDocs() {
+  const ul = $('#doc-list');
+  ul.replaceChildren();
+  const docs = (ctxData && ctxData.docs) || [];
+  if (!docs.length) {
+    ul.append(el('li', { class: 'muted', text: '还没有文档' }));
+    return;
+  }
+  for (const d of docs) {
+    ul.append(el('li', { onclick: () => openDoc(d.path) },
+      el('span', { class: 'title', text: d.path }),
+      el('span', { class: 'muted', text: `${d.size} B` })));
+  }
+}
+
+function showDocBrowse() {
+  $('#doc-browse').hidden = false;
+  $('#doc-editor').hidden = true;
+}
+
+async function savePointer() {
+  try {
+    ctxData = await api(`/api/projects/${state.projectId}/context/pointer`, {
+      method: 'PUT',
+      body: JSON.stringify({ text: $('#pointer-text').value }),
+    });
+    renderContext();
+    toast('指针图已保存 —— 下一个任务就会带上它');
+  } catch (err) {
+    toast(`保存失败：${err.message}`, true);
+  }
+}
+
+async function openDoc(path) {
+  try {
+    const d = await api(
+      `/api/projects/${state.projectId}/context/docs/${encodeURIComponent(path)}`);
+    editingDoc = path;
+    $('#doc-editor-title').textContent = path;
+    $('#doc-text').value = d.text;
+    $('#doc-browse').hidden = true;
+    $('#doc-editor').hidden = false;
+  } catch (err) {
+    toast(`打开失败：${err.message}`, true);
+  }
+}
+
+async function saveDoc() {
+  if (!editingDoc) return;
+  try {
+    await api(`/api/projects/${state.projectId}/context/docs/${encodeURIComponent(editingDoc)}`,
+      { method: 'PUT', body: JSON.stringify({ text: $('#doc-text').value }) });
+    await loadContext();
+    toast(`${editingDoc} 已保存`);
+  } catch (err) {
+    toast(`保存失败：${err.message}`, true);
+  }
+}
+
+async function deleteDoc() {
+  if (!editingDoc || !confirm(`删除 ${editingDoc}？`)) return;
+  try {
+    await api(`/api/projects/${state.projectId}/context/docs/${encodeURIComponent(editingDoc)}`,
+      { method: 'DELETE' });
+    await loadContext();
+    toast('已删除');
+  } catch (err) {
+    toast(`删除失败：${err.message}`, true);
+  }
+}
+
+async function createDoc(form) {
+  const path = (Object.fromEntries(new FormData(form)).path || '').trim();
+  if (!path) return;
+  try {
+    await api(`/api/projects/${state.projectId}/context/docs/${encodeURIComponent(path)}`,
+      { method: 'PUT', body: JSON.stringify({ text: `# ${path}\n` }) });
+    form.reset();
+    await loadContext();
+    await openDoc(path);
+  } catch (err) {
+    toast(`创建失败：${err.message}`, true);
   }
 }
 
@@ -504,6 +628,31 @@ function init() {
     } else if (route && state.task) {
       switchTab(route.tab);
     }
+  });
+
+  // ---- 上下文面板 ----
+  document.querySelectorAll('.ctab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.ctab').forEach((b) => b.classList.toggle('active', b === btn));
+      const which = btn.dataset.ctab;
+      $('#ctx-pointer').hidden = which !== 'pointer';
+      $('#ctx-journal').hidden = which !== 'journal';
+      $('#ctx-docs').hidden = which !== 'docs';
+    });
+  });
+  $('#pointer-save').addEventListener('click', savePointer);
+  $('#doc-form').addEventListener('submit', (e) => { e.preventDefault(); createDoc(e.target); });
+  $('#doc-save').addEventListener('click', saveDoc);
+  $('#doc-cancel').addEventListener('click', showDocBrowse);
+  $('#doc-delete').addEventListener('click', deleteDoc);
+
+  // 指针图随输入更新字节数提示
+  $('#pointer-text').addEventListener('input', () => {
+    if (!ctxData) return;
+    const bytes = new TextEncoder().encode($('#pointer-text').value).length;
+    const tag = $('#ctx-bytes');
+    tag.textContent = `${bytes} / ${ctxData.pointer_soft_limit} 字节`;
+    tag.style.color = bytes > ctxData.pointer_soft_limit ? 'var(--del-fg)' : '';
   });
 
   // 任务提交表单挂在详情面板上方（动态建，避免 HTML 里重复一份）

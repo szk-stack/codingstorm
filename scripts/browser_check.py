@@ -52,6 +52,10 @@ PROBES = {
     "diff 行数": "document.querySelectorAll('#diff-body tr').length",
     "diff 首行": "document.querySelector('#diff-body')?.innerText?.slice(0,400)",
     "操作按钮": "document.querySelector('#actions')?.innerText",
+    "上下文面板可见": "!document.querySelector('#context-panel')?.hidden",
+    "指针图字节提示": "document.querySelector('#ctx-bytes')?.textContent",
+    "指针图内容": "document.querySelector('#pointer-text')?.value?.slice(0,200)",
+    "变更记录": "document.querySelector('#journal-text')?.textContent?.slice(-300)",
     "JS 报错": "window.__errors ? window.__errors.join(' | ') : '(无)'",
 }
 

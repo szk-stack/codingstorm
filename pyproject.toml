@@ -23,6 +23,7 @@ dev = [
 
 [project.scripts]
 codingstorm = "codingstorm.app:main"
+cs = "codingstorm.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["codingstorm"]

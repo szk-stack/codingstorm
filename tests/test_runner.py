@@ -277,6 +277,47 @@ def test_assistant_tool_use_is_captured(env):
     run(main())
 
 
+def test_consecutive_events_get_distinct_seq(env):
+    """回归：seq 必须在内存里自增。
+
+    之前每次都去库里查 MAX(seq)，但事件是批量提交的，前一条还没落盘时查出来是旧值，
+    连续几条会拿到同一个 seq，然后被 INSERT OR REPLACE 互相覆盖 —— 静默丢事件。
+    线上就是这么丢掉一整条 Write 工具调用的。
+    """
+    _, store, runner = env
+
+    async def main():
+        task_id = await _mk_task(store)
+        for i in range(5):
+            await runner._emit(task_id, "assistant", {"text": f"msg{i}"})
+        await store.db.flush_events()
+
+        rows = await store.list_events(task_id)
+        assert [r["seq"] for r in rows] == [0, 1, 2, 3, 4], "seq 撞号了"
+        assert len(rows) == 5, "有事件被覆盖丢失"
+
+    run(main())
+
+
+def test_seq_resumes_from_db_after_restart(env):
+    """内存计数器要从库里已有的最大值续上，不能从头开始。"""
+    _, store, runner = env
+
+    async def main():
+        task_id = await _mk_task(store)
+        await runner._emit(task_id, "assistant", {"text": "first"})
+        await store.db.flush_events()
+        runner._seq.pop(task_id, None)  # 模拟进程重启
+
+        await runner._emit(task_id, "assistant", {"text": "second"})
+        await store.db.flush_events()
+
+        rows = await store.list_events(task_id)
+        assert [r["seq"] for r in rows] == [0, 1]
+
+    run(main())
+
+
 # ---------- 工具函数 ----------
 
 def test_truncate_payload_keeps_small_objects():

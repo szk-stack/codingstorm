@@ -132,6 +132,8 @@ class Runner:
         self.store = store
         self.on_event = on_event
         self._procs: dict[str, asyncio.subprocess.Process] = {}
+        # 每任务的事件序号，在内存里自增（见 _emit 的说明）
+        self._seq: dict[str, int] = {}
 
     # ---------- 命令行 ----------
 
@@ -205,6 +207,7 @@ class Runner:
                 await self._supervise(proc, log_path, task_id, outcome)
             finally:
                 self._procs.pop(task_id, None)
+                self._seq.pop(task_id, None)
 
         outcome.exit_code = proc.returncode
         if not outcome.saw_result:
@@ -349,13 +352,16 @@ class Runner:
                 for b in (message.get("content") or [])
                 if isinstance(b, dict) and b.get("type") == "tool_use"
             ]
-            texts = [
+            text = "\n".join(
                 b.get("text", "")
                 for b in (message.get("content") or [])
                 if isinstance(b, dict) and b.get("type") == "text"
-            ]
+            ).strip()
+            if not text and not tool_uses:
+                # 纯 thinking 的块不带信息，落了只是噪音
+                return
             await self._emit(task_id, "assistant", {
-                "text": "\n".join(t for t in texts if t)[:MAX_PAYLOAD_BYTES] or None,
+                "text": text[:MAX_PAYLOAD_BYTES] or None,
                 "tool_uses": tool_uses or None,
             })
             return
@@ -398,12 +404,19 @@ class Runner:
     async def _emit(self, task_id: str, etype: str, payload: dict[str, Any]) -> None:
         if etype not in PERSISTED_EVENT_TYPES:
             return
-        seq = await self.store.next_event_seq(task_id)
+        # seq 必须在这里自增，不能每次去库里查 MAX(seq) —— 事件是批量提交的，
+        # 前一条还没落盘时查出来的是旧值，连续几条会拿到同一个 seq，
+        # 然后被 INSERT OR REPLACE 互相覆盖，静默丢事件。
+        if task_id not in self._seq:
+            self._seq[task_id] = await self.store.next_event_seq(task_id)
+        seq = self._seq[task_id]
+        self._seq[task_id] = seq + 1
+
         await self.store.db.append_events(
             [(task_id, seq, utcnow(), etype, json.dumps(payload, ensure_ascii=False))]
         )
         if self.on_event is not None:
-            await self.on_event({"task_id": task_id, "type": etype, "payload": payload})
+            await self.on_event({"task_id": task_id, "type": etype, "payload": payload, "seq": seq})
 
     async def _fill_from_log_tail(self, log_path: Path, outcome: RunOutcome) -> None:
         """崩在 result 落库与状态更新之间时，从原始日志把结果捞回来。"""

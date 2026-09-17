@@ -394,13 +394,27 @@ while True:
 1. 读连接不能用 `threading.local` —— 读走 `asyncio.to_thread`，线程池会换线程，sqlite3 拒绝跨线程使用连接
 2. **事件 seq 撞号导致静默丢事件** —— `_emit` 每次去库里查 `MAX(seq)` 分配序号，但事件走批量提交，前一条还没落盘时查出来是旧值，连续几条拿到同一个 seq 后被 `INSERT OR REPLACE` 互相覆盖。线上实测丢掉了一整条 `Write` 工具调用。改为在内存里自增。
 
-### Phase 2 · Git 生命周期
+### Phase 2 · Git 生命周期 ✅ 已完成（2026-09-17）
 
 - worktree 创建 / 清理 / prune 对账
 - 自动提交、rebase、`update-ref` 快进批准
 - diff 生成与展示
-- 批准幂等（intent + `merge-base --is-ancestor`）
+- 批准幂等（线性模型 + `update-ref` 天然幂等）
 - 重试重建
+
+**已在执行机上端到端验证**：提交任务 → 自动执行 → 审 diff → 批准 → `main` 前进且历史保持线性。
+第二个任务的 `base_commit` 等于第一个任务合并后的提交，证明**串行语义成立**。
+84 项单元测试。
+
+**实测暴露的两个新问题（都是单元测试抓不到的）：**
+
+1. **构建产物被 `git add -A` 提交进 diff** —— AI 为了验证自己的代码会跑一遍，产生
+   `__pycache__/*.pyc`；没有 `.gitignore` 的仓库就会把这些垃圾一起提交。
+   解法：往仓库的 `info/exclude` 写默认排除列表（**未跟踪的本地文件**，不进用户历史，
+   但对所有 worktree 生效）。
+2. **`update-ref` 不同步工作树** —— 非裸仓库在第一次批准后，主工作区会和 HEAD 脱节，
+   `git status` 看起来像"所有文件都被删了"。审查后决定：**推荐用裸克隆**，
+   并在首次用到非裸仓库时打告警。
 
 ### Phase 3 · Web UI
 

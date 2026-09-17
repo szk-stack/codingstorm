@@ -467,9 +467,20 @@ AI 产出严格遵守了该规则；沉淀也如约写入了带三字段的变�
 - **`price_version` 一起落库**：改价目表不能改写历史成本，那等于篡改账本。
 - hook 的 stderr 要**强制 UTF-8** —— 按系统 locale 编码会变乱码，而这段文字要回喂给模型。
 
-### Phase 6 · 消息入口接入（可选）
+### Phase 6 · 消息入口接入 ✅ 已完成（2026-09-18）
 
-- 通过已有的消息网关（微信 / QQ）提交任务，执行完推结果
+- `cs` 命令行：projects / submit / ls / show / events / diff / approve / discard / requeue / usage
+- `docs/hermes-skill.md`：给消息网关的技能说明
+
+**做法：不写 Hermes 插件。** Hermes 这类 agent 本来就有终端工具集，而 codingstorm 有完整的
+HTTP API —— 给它一个 CLI 加上一份技能说明就够了，不用去改它的插件体系（那是另一套框架，
+深入接入的风险和维护成本都不划算）。
+
+已装到 `~/.hermes/skills/codingstorm/SKILL.md`，`hermes skills list` 显示 `enabled`，
+无需重启。微信/QQ 里说「让 AI 给 stats.py 加个 mode 函数」即可入队。
+
+`cs` 本身也独立有用：脚本、cron、SSH 里都能提交和查看任务，不必开浏览器。
+
 
 **Phase 0–3 是能解决痛点的最小闭环**，4–6 依次叠加。
 

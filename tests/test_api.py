@@ -118,6 +118,15 @@ def test_requeue_missing_task_404(client: TestClient):
     assert client.post("/api/tasks/nope/requeue").status_code == 404
 
 
+def test_task_out_exposes_git_fields(client: TestClient):
+    """分支、基点、提交这些字段要暴露出来，否则前端没法展示审阅上下文。"""
+    p = _mk_project(client)
+    task = client.post(f"/api/projects/{p['id']}/tasks", json={"title": "x"}).json()
+    for field in ("branch", "worktree_path", "base_commit", "commit_sha",
+                  "merge_commit_sha", "last_event_at"):
+        assert field in task, f"TaskOut 缺少字段 {field}"
+
+
 def test_scheduler_not_started_in_tests(client: TestClient):
     """start_scheduler=False 时不应有调度循环在跑。"""
     scheduler = client.app.state.scheduler  # type: ignore[attr-defined]

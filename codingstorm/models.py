@@ -68,7 +68,10 @@ class TaskOut(BaseModel):
     priority: int
     branch: str | None = None
     worktree_path: str | None = None
+    base_commit: str | None = None
     commit_sha: str | None = None
+    merge_commit_sha: str | None = None
+    last_event_at: str | None = None
     created_at: str
     started_at: str | None = None
     finished_at: str | None = None

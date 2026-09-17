@@ -228,6 +228,73 @@ def test_finalize_detects_rebase_conflict(env):
     run(main())
 
 
+def test_build_artifacts_are_not_committed(env):
+    """AI 为了验证代码会跑一遍，产生 __pycache__ 之类的东西。
+
+    收尾用的是 `git add -A`，没有 .gitignore 的仓库会把这些垃圾一起提交。
+    我们用仓库的 info/exclude 挡掉（未跟踪文件，不进用户历史）。
+
+    线上就是这么把 `__pycache__/x.pyc` 提进 diff 的。
+    """
+    _, wm, repo = env
+
+    async def main():
+        ws = await wm.prepare(
+            project_name="p", repo_path=str(repo), target_branch="main",
+            task_id="t1", title="x",
+        )
+        _write(ws.path, "mod.py", "x = 1\n")
+        (ws.path / "__pycache__").mkdir()
+        (ws.path / "__pycache__" / "mod.cpython-312.pyc").write_bytes(b"\x00\x01")
+        (ws.path / "node_modules").mkdir()
+        (ws.path / "node_modules" / "dep.js").write_text("//")
+        (ws.path / "keep.txt").write_text("这个要提交")
+
+        result = await wm.finalize(ws, message="加 mod.py")
+        assert result.had_changes
+
+        diff = await wm.diff(ws)
+        assert "mod.py" in diff, "真正的产物要提交"
+        assert "keep.txt" in diff
+        assert "__pycache__" not in diff, "字节码缓存不该进提交"
+        assert "node_modules" not in diff
+
+    run(main())
+
+
+def test_exclude_block_is_written_once(env):
+    _, wm, repo = env
+
+    async def main():
+        for i in range(3):
+            await wm.prepare(
+                project_name="p", repo_path=str(repo), target_branch="main",
+                task_id=f"t{i}", title="x",
+            )
+        exclude = repo / ".git" / "info" / "exclude"
+        text = exclude.read_text(encoding="utf-8")
+        assert text.count("codingstorm: 自动生成") == 1, "不能每次 prepare 都追加一遍"
+
+    run(main())
+
+
+def test_exclude_is_not_a_tracked_file(env):
+    """不能往用户仓库里塞一个 .gitignore —— 那是tracked 的，会污染他们的历史。"""
+    _, wm, repo = env
+
+    async def main():
+        await wm.prepare(
+            project_name="p", repo_path=str(repo), target_branch="main",
+            task_id="t1", title="x",
+        )
+        assert not (repo / ".gitignore").exists()
+        tracked = git(["ls-files"], repo)
+        assert ".gitignore" not in tracked
+        assert "exclude" not in tracked
+
+    run(main())
+
+
 # ---------- 批准 ----------
 
 def test_approve_fast_forwards_target(env):

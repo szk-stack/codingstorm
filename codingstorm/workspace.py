@@ -57,12 +57,59 @@ def slugify(text: str, max_len: int = 32) -> str:
     return ascii_part[:max_len].strip("-")
 
 class WorkspaceManager:
+    # 提交前要挡掉的构建产物。写进仓库的 info/exclude（**未跟踪的本地文件**，
+    # 不会进用户历史），但对所有 worktree 生效。
+    #
+    # 为什么需要：AI 为了验证自己的代码常常会跑一遍，于是产生 __pycache__ 之类的东西；
+    # 而收尾用的是 `git add -A`，没有 .gitignore 的仓库就会把这些垃圾一起提交。
+    DEFAULT_EXCLUDES = (
+        "__pycache__/",
+        "*.py[cod]",
+        "*.so",
+        ".pytest_cache/",
+        ".ruff_cache/",
+        ".mypy_cache/",
+        "node_modules/",
+        ".venv/",
+        "venv/",
+        ".DS_Store",
+    )
+    _EXCLUDE_MARKER = "# codingstorm: 自动生成，防止把构建产物提交进去"
+
     def __init__(self, config: Config):
         self.config = config
         self._warned_repos: set[str] = set()
+        self._excluded_repos: set[str] = set()
         # 按仓库的写锁。批准的 update-ref 与 runner 的自动提交会并发，
         # 都落在同一个仓库上，得串起来。
         self._repo_locks: dict[str, asyncio.Lock] = {}
+
+    async def _ensure_exclude(self, repo_path: str) -> None:
+        if repo_path in self._excluded_repos:
+            return
+        self._excluded_repos.add(repo_path)
+
+        repo = Git(Path(repo_path))
+        raw = (await repo.run("rev-parse", "--git-common-dir", check=False)).strip()
+        if not raw:
+            return
+        git_dir = Path(raw)
+        if not git_dir.is_absolute():
+            git_dir = Path(repo_path) / git_dir
+
+        exclude = git_dir / "info" / "exclude"
+        try:
+            existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+            if self._EXCLUDE_MARKER in existing:
+                return
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            block = "\n".join([self._EXCLUDE_MARKER, *self.DEFAULT_EXCLUDES])
+            exclude.write_text(
+                existing.rstrip("\n") + "\n\n" + block + "\n", encoding="utf-8"
+            )
+            log.info("已为 %s 写入默认排除规则（info/exclude）", repo_path)
+        except OSError as exc:
+            log.warning("写 info/exclude 失败（忽略）: %s", exc)
 
     def repo_lock(self, repo_path: str) -> asyncio.Lock:
         lock = self._repo_locks.get(repo_path)
@@ -106,6 +153,7 @@ class WorkspaceManager:
         self, *, project_name: str, repo_path: str, target_branch: str, task_id: str, title: str
     ) -> Workspace:
         await self._warn_if_not_bare(repo_path)
+        await self._ensure_exclude(repo_path)
         async with self.repo_lock(repo_path):
             return await self._prepare(
                 project_name=project_name,

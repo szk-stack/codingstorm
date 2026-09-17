@@ -23,23 +23,25 @@ tar czf - codingstorm codingstorm.example.toml prices.example.toml \
 # （等运行中的任务收尾）时就启动了新的，结果**旧版本一直占着端口在服务**，
 # 改了代码却看不到效果，排查了很久。
 echo "==> 停止旧进程"
+# 注意 `pgrep -f "codingstorm.app"` 这种宽泛模式会把**执行检查的 shell 自身**也算进去
+# （它的命令行里含有这个字符串），数出来永远是多的。所以匹配更具体的完整路径。
 ssh "$HOST" bash -s <<REMOTE
 set -u
-PIDS=\$(pgrep -f "codingstorm.app" || true)
+PIDS=\$(pgrep -f "venv/bin/python -m codingstorm.app" || true)
 if [ -n "\$PIDS" ]; then
   kill \$PIDS 2>/dev/null || true
   for i in \$(seq 1 30); do
-    pgrep -f "codingstorm.app" >/dev/null || break
+    pgrep -f "venv/bin/python -m codingstorm.app" >/dev/null || break
     sleep 1
   done
-  LEFT=\$(pgrep -f "codingstorm.app" || true)
+  LEFT=\$(pgrep -f "venv/bin/python -m codingstorm.app" || true)
   if [ -n "\$LEFT" ]; then
     echo "    优雅退出超时，强制终止: \$LEFT"
     kill -9 \$LEFT 2>/dev/null || true
     sleep 1
   fi
 fi
-if pgrep -f "codingstorm.app" >/dev/null; then
+if pgrep -f "venv/bin/python -m codingstorm.app" >/dev/null; then
   echo "    ✗ 仍有进程无法终止，中止部署"
   exit 1
 fi
@@ -63,7 +65,7 @@ if ! curl -sS -m 5 -o /dev/null http://127.0.0.1:$PORT/api/health; then
   tail -8 \$HOME/codingstorm/app.log
   exit 1
 fi
-COUNT=\$(pgrep -fc "codingstorm.app" || echo 0)
+COUNT=\$(pgrep -f "venv/bin/python -m codingstorm.app" | wc -l)
 if [ "\$COUNT" != "1" ]; then
   echo "    ✗ 期望恰好 1 个进程，实际 \$COUNT 个"
   exit 1

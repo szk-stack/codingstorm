@@ -6,6 +6,7 @@
 
 import asyncio
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -205,6 +206,41 @@ def test_approve_conflict_raises_and_leaves_no_half_state(env):
         assert not (git_dir / "rebase-merge").exists()
         # 分支内容保留，供人工处理
         assert git(["log", "-1", "--format=%s"], ws.path) == "改 README"
+
+    run(main())
+
+
+def test_diff_still_readable_after_merge(env):
+    """批准会删掉分支，但用户仍要能回看这次改了什么。
+
+    回归：之前 diff 直接按 `refs/heads/<分支>` 取，分支没了就报
+    `ambiguous argument`，**合完再也看不到改动**。
+    """
+    store, wm, repo = env
+
+    async def main():
+        _project, _task, ws = await _make_task(store, wm, repo)
+        (ws.path / "kept.py").write_text("x = 1\n", encoding="utf-8")
+        result = await wm.finalize(ws, message="加 kept.py")
+        await wm.approve(ws, result.commit_sha)
+        await wm.cleanup(ws, delete_branch=True)   # 分支没了
+
+        merged = replace(ws, commit_sha=result.commit_sha)
+        diff = await wm.diff(merged)
+        assert "kept.py" in diff, "合并后仍应能看到改动"
+
+    run(main())
+
+
+def test_diff_falls_back_when_branch_missing_without_commit(env):
+    """连 commit_sha 都没有时不该崩，只是取不到内容。"""
+    store, wm, repo = env
+
+    async def main():
+        _project, _task, ws = await _make_task(store, wm, repo)
+        gone = replace(ws, branch="cs/does-not-exist", commit_sha=None)
+        with pytest.raises(Exception):
+            await wm.diff(gone)
 
     run(main())
 

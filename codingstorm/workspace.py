@@ -32,6 +32,8 @@ class Workspace:
     branch: str
     base_commit: str
     target_branch: str
+    # 任务产出。分支被清掉之后（批准/丢弃时），回看 diff 只能靠它
+    commit_sha: str | None = None
 
     @property
     def ephemeral(self) -> bool:
@@ -275,14 +277,33 @@ class WorkspaceManager:
 
     # ---------- diff ----------
 
+    async def _diff_refs(self, repo: Git, workspace: Workspace) -> tuple[str, str]:
+        """决定拿哪两个提交来比。
+
+        **两种情形要的答案不一样：**
+
+        - 分支还在（待审）：要比的是「合入之后 target 会变成什么样」，
+          所以要拿**当前的 target** 当基准 —— 它可能已经被别的任务推进过了。
+        - 分支没了（已批准/丢弃）：`main` 这时已经包含那个提交，
+          再跟 main 比就是空的。这时要比的是「**这次任务改了什么**」，
+          基准得退回任务的 **base_commit**。
+
+        回归：早期只会按 `refs/heads/<分支>` 取，分支一删就报 ambiguous argument，
+        合完彻底看不到改动；改成退到 commit_sha 后又发现基准错了，diff 是空的。
+        """
+        ref = f"refs/heads/{workspace.branch}"
+        if await repo.ref_exists(ref):
+            return workspace.target_branch, ref
+        if workspace.commit_sha and workspace.base_commit:
+            return workspace.base_commit, workspace.commit_sha
+        return workspace.target_branch, ref
+
     async def diff(self, workspace: Workspace, *, base: str | None = None, head: str | None = None) -> str:
         repo = Git(workspace.repo_path)
-        base_ref = base or workspace.target_branch
-        head_ref = head or f"refs/heads/{workspace.branch}"
-        return await repo.diff(base_ref, head_ref)
+        default_base, default_head = await self._diff_refs(repo, workspace)
+        return await repo.diff(base or default_base, head or default_head)
 
     async def diff_stat(self, workspace: Workspace, *, base: str | None = None, head: str | None = None) -> str:
         repo = Git(workspace.repo_path)
-        base_ref = base or workspace.target_branch
-        head_ref = head or f"refs/heads/{workspace.branch}"
-        return await repo.diff_stat(base_ref, head_ref)
+        default_base, default_head = await self._diff_refs(repo, workspace)
+        return await repo.diff_stat(base or default_base, head or default_head)

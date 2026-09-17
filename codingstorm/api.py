@@ -176,6 +176,8 @@ async def _workspace_for(request: Request, task_id: str):
         branch=raw["branch"],
         base_commit=raw["base_commit"] or "",
         target_branch=project.target_branch,
+        # 分支被清掉后（批准/丢弃时），回看 diff 要靠它
+        commit_sha=raw["commit_sha"],
     )
     return store, raw, workspace
 

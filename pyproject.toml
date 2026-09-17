@@ -9,7 +9,10 @@ description = "按项目隔离的 Claude Code 任务队列：把「同步等待�
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
-    "uvicorn[standard]>=0.32",
+    "uvicorn>=0.32",
+    # uvicorn 需要它才能处理 WebSocket 升级请求 —— 缺了不会报错，
+    # 而是对升级请求直接返回 404 并在日志里留一行 WARNING。
+    "websockets>=12",
 ]
 
 [project.optional-dependencies]

@@ -48,10 +48,16 @@ cwd = 任务的工作目录（worktree）。`-p --output-format stream-json` 需
 | type | 内容 |
 |---|---|
 | `system` / `subtype:"init"` | `session_id`、`cwd`、`model`、`tools[]`、`permissionMode`、`uuid` |
-| `assistant` | `message` 是完整的 Anthropic Message（含 `content[]`、`usage`）。`content[]` 元素为 `{type:"text"}` 或 `{type:"tool_use", id, name, input}` |
+| `system` / `subtype:"thinking_tokens"` | **Phase 0 实测新增**：`estimated_tokens`、`estimated_tokens_delta`。**数量极大**，见下方警告 |
+| `system` / `subtype:"api_retry"` | **Phase 0 实测新增**：`attempt`、`max_retries`、`retry_delay_ms`、`error_status`、`error`。见下方警告 |
+| `assistant` | `message` 是完整的 Anthropic Message（含 `content[]`、`usage`）。`content[]` 元素为 `{type:"text"}`、`{type:"thinking"}` 或 `{type:"tool_use", id, name, input}` |
 | `user` | 工具结果回流，`content[]` 含 `{type:"tool_result", tool_use_id, content, is_error}` |
 | `stream_event` | 开 `--include-partial-messages` 后才有。原始 SSE，`content_block_delta` → `delta.text` 用于逐字渲染 |
-| `result` | `subtype`(`success`/`error_max_turns`/`error_during_execution`)、`is_error`、`result`(最终文本)、`duration_ms`、`num_turns`、`total_cost_usd`、`usage`、`permission_denials` |
+| `result` | `subtype`(`success`/`error_max_turns`/`error_during_execution`)、`is_error`、`result`(最终文本)、`duration_api_ms`、`num_turns`、`stop_reason`、`total_cost_usd`、`usage`、`permission_denials` |
+
+> ⚠️ **`thinking_tokens` 会淹没事件流。** 实测一句「Reply with exactly: OK」产生 **2890 行**，绝大多数是这个事件。它和 `stream_event` 一样**一条都不能落库**，只能用于实时渲染。
+
+> ⚠️ **`api_retry` 让失败不再快速失败。** 认证失败（401）不会立刻报错，而是**退避重试 10 次**（实测退避到 38 秒一轮，共约 3 分钟）。runner 必须监听它，否则一个坏凭证会让队列白占并发位三分钟。这也说明**不能只靠退出码判断成败**。
 
 **退出码粒度粗**（0 成功 / 1 失败 / 130 SIGINT / 143 SIGTERM），**权威判据是 `result` 事件的 `subtype` + `is_error`**。
 
@@ -65,7 +71,31 @@ cwd = 任务的工作目录（worktree）。`-p --output-format stream-json` 需
 
 hook 从 stdin 收 JSON（`tool_name`、`tool_input`、`cwd`、`session_id`），**退出码 2 = 阻断**并把 stderr 回喂给模型。
 
-> **Phase 0 必须实测**：`bypassPermissions` 下 hook 会不会触发。若无效应改用 `--permission-prompt-tool`（把权限询问转成 MCP 工具调用，由我们的代码回 allow/deny）。
+> ✅ **Phase 0 已实测确认**：`bypassPermissions` 下 hook **会正常触发并成功阻断**（`git push` 被拦，远端无任何 ref）。**不需要 `--permission-prompt-tool`，不需要写 MCP server。**
+>
+> 被拦截时模型收到的是：`PreToolUse:Bash hook error: [<脚本>]: <stderr 内容>` —— 模型能看懂原因并会调整行为，实测它会如实汇报被拦截而不是绕过。
+
+### 3.4 执行机上的模型配置（Phase 0 摸清）
+
+Claude Code 的配置在服务器的 `~/.claude/settings.json`：
+
+```
+ANTHROPIC_AUTH_TOKEN           = <DeepSeek API key>
+ANTHROPIC_BASE_URL             = https://api.deepseek.com/anthropic
+ANTHROPIC_MODEL                = deepseek-v4-flash
+ANTHROPIC_DEFAULT_SONNET_MODEL = deepseek-v4-flash
+ANTHROPIC_DEFAULT_OPUS_MODEL   = deepseek-v4-pro
+ANTHROPIC_DEFAULT_HAIKU_MODEL  = deepseek-v4-flash
+CLAUDE_CODE_SUBAGENT_MODEL     = deepseek-v4-flash
+effort                         = max
+```
+
+**要点：**
+
+- 走的是 **DeepSeek 官方的 Anthropic 兼容端点**，国内服务，**服务器直连即可，不需要代理**
+- **所有模型角色基本都映射到同一个 `deepseek-v4-flash`** —— 所以 `--model` 参数在这里没有选择空间。想做「沉淀步骤用便宜模型」这类优化是行不通的
+- 先前配置里的 `opencode.ai/zen/go` 因**账户余额耗尽**已废弃。注意它的失败方式：报 `CreditsError` 而非 `AuthenticationError`，且**重试 10 次才失败**
+- 配置来源是本机 CC Switch（`~/.cc-switch/cc-switch.db`）里当前启用的 DeepSeek 供应商
 
 ---
 
@@ -158,11 +188,13 @@ queued ──→ running ──→ awaiting_review ──→ merged
 
 ### 5.1 子进程与日志
 
-- **不要把 stdout 用 PIPE 逐行 `readline()`**：asyncio 的 StreamReader 默认 limit 是 64 KiB，超长行直接抛 `ValueError` 且不消费缓冲区，之后每行都炸。而 `Write` 整个文件、`Read`/`Bash` 的输出轻松超过 64 KiB —— 解析器会在长任务里随机崩溃。
-- **改为把 stdout 重定向到每任务一个 NDJSON 日志文件，另起协程 tail 它**。一次解决行长、背压、崩溃丢日志三件事，而且这份原始日志正是回放和恢复所需。
+- **不要把 stdout 用 PIPE 逐行 `readline()`**：asyncio 的 StreamReader 默认 limit 是 64 KiB，超长行会抛 `ValueError` 且不消费缓冲区，之后每行都炸。
+  > Phase 0 实测：**这个风险没有复现**。120 KB 的命令输出、420 KB 的文件读取，最长行都不到 3 KB —— Claude Code 会先截断 tool_result。但下面两个理由独立成立，所以设计不变。
+- **改为把 stdout 重定向到每任务一个 NDJSON 日志文件，另起协程 tail 它**。理由有二：① 消费端慢会阻塞子进程（一条命令就能产生 2890 个事件，同步落库会成为瓶颈）；② **崩溃后需要原始日志来捞回 `result` 事件** —— 这是唯一权威的成败判据，丢了就全丢。
 - **stderr 单独一个文件，不要合并进 stdout**。参考实现 `claude-queue-manager` 用了 `stderr=STDOUT`，结果 stderr 的杂音混进 JSON 流，解析器必须随时容忍失败。分开放，两个问题一起消失。
+  > 注意：**部分错误确实走 stderr**（如 `--verbose` 缺失），但认证失败等是走 stdout 的 NDJSON 事件（见 3.2 的 `api_retry`）。**两边都要看，不能只盯一路。**
 - 即便如此，**单行解析失败也要降级为纯文本**，不能让一个畸形行打挂整个 tail 循环。
-- `stdin=DEVNULL`；`start_new_session=True` 建独立进程组（顺带覆盖 Claude 拉起的 bash/ripgrep）。
+- **`stdin=DEVNULL` 是必需的**。Phase 0 踩到过：从脚本里拉起 `claude -p` 时它继承了脚本的 stdin，把脚本剩余内容读成了上下文。`start_new_session=True` 建独立进程组（顺带覆盖 Claude 拉起的 bash/ripgrep）。
 
 ### 5.2 孤儿进程
 
@@ -310,7 +342,7 @@ while True:
 ## 8. 仓库布局
 
 ```
-/srv/codingstorm/
+~/codingstorm/                         ← /srv 需要 sudo，改用家目录
   repos/<project>/                     被调度的仓库（codingstorm 独占）
   worktrees/<project>/<task_id>/       每任务一个
   contexts/<project>/                  三层上下文
@@ -326,17 +358,25 @@ while True:
 
 ## 9. 实施阶段
 
-### Phase 0 · 技术验证（先做，结果决定后续细节）
+### Phase 0 · 技术验证 ✅ 已完成（2026-09-17，服务器 Claude Code 2.1.220）
 
-`scripts/spike.py`：在服务器上跑通一次 `claude -p`，把 NDJSON 落到文件，确认：
+在腾讯云服务器上实跑，全部结论如下：
 
-- [ ] 实际事件序列与字段（尤其 `result.usage` 是否如文档所述）
-- [ ] `--verbose` 是否必需
-- [ ] **`bypassPermissions` 下 PreToolUse hook 会不会触发** ← 决定边界方案
-- [ ] `--add-dir` 授权后 AI 能否读到 worktree 外的上下文目录
-- [ ] `--max-turns` 达到时的实际行为
-- [ ] 超长行确实存在（验证 64 KiB 问题，确认改用文件的必要性）
-- [ ] 服务器 2.1.220 与本地 2.1.274 的事件差异
+| 验证项 | 结果 |
+|---|---|
+| 事件序列与字段 | ✅ 与文档基本一致，但**多出两个未记载的事件类型**：`thinking_tokens`、`api_retry`（见 3.2） |
+| `--verbose` 是否必需 | ✅ **必需**。缺少时报 `--output-format=stream-json requires --verbose`，**这条错误走 stderr** |
+| **hook 在 `bypassPermissions` 下是否触发** | ✅ **会触发，且成功阻断**。`git push` 被拦，远端 refs 为空。**不需要 MCP server** |
+| `--add-dir` 读 worktree 外的文件 | ✅ 可用。成功读到工作目录外的文件并正确回答 |
+| `--max-turns` 用尽 | ✅ `subtype="error_max_turns"`、`is_error=true`、`result=None`、退出码 1 —— 印证「权威判据是 subtype 而非退出码」 |
+| 64 KiB 超长行风险 | ❌ **未复现**。120 KB 命令输出、420 KB 文件读取，最长行仍 < 3 KB。Claude Code 会先截断 tool_result |
+| `stdin` 继承 | ⚠️ 从脚本拉起时 claude 会继承脚本的 stdin，把脚本内容读成上下文。**`stdin=DEVNULL` 是必需的** |
+
+**新增的量化数据（用于记账和容量估算）：**
+
+- 一句「Reply with exactly: OK」消耗 **26198 input tokens + 78080 cache read + 3423 output tokens**
+- **固定开销极高** —— 那是 Claude Code 的系统提示与工具定义。**任务粒度太细不划算**，这一点会影响产品设计
+- `total_cost_usd` 实测报 **0.26507 美元**（按 Claude 价目算），而实际走的是 DeepSeek。**确认该字段不可用**，必须按 `result.usage` 的 token 自算
 
 ### Phase 1 · 核心骨架
 

@@ -60,6 +60,16 @@ class WorkspaceManager:
     def __init__(self, config: Config):
         self.config = config
         self._warned_repos: set[str] = set()
+        # 按仓库的写锁。批准的 update-ref 与 runner 的自动提交会并发，
+        # 都落在同一个仓库上，得串起来。
+        self._repo_locks: dict[str, asyncio.Lock] = {}
+
+    def repo_lock(self, repo_path: str) -> asyncio.Lock:
+        lock = self._repo_locks.get(repo_path)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._repo_locks[repo_path] = lock
+        return lock
 
     def branch_name(self, task_id: str, title: str) -> str:
         slug = slugify(title)
@@ -96,6 +106,18 @@ class WorkspaceManager:
         self, *, project_name: str, repo_path: str, target_branch: str, task_id: str, title: str
     ) -> Workspace:
         await self._warn_if_not_bare(repo_path)
+        async with self.repo_lock(repo_path):
+            return await self._prepare(
+                project_name=project_name,
+                repo_path=repo_path,
+                target_branch=target_branch,
+                task_id=task_id,
+                title=title,
+            )
+
+    async def _prepare(
+        self, *, project_name: str, repo_path: str, target_branch: str, task_id: str, title: str
+    ) -> Workspace:
         repo = Git(Path(repo_path))
         # 崩溃会留下 .git/worktrees/*，不清的话同路径再 add 会报 already exists
         await repo.worktree_prune()
@@ -131,6 +153,10 @@ class WorkspaceManager:
     # ---------- 收尾 ----------
 
     async def finalize(self, workspace: Workspace, *, message: str) -> FinalizeResult:
+        async with self.repo_lock(str(workspace.repo_path)):
+            return await self._finalize(workspace, message=message)
+
+    async def _finalize(self, workspace: Workspace, *, message: str) -> FinalizeResult:
         """任务执行完后：提交改动 → rebase 到最新 target。
 
         rebase 放在这里而不是批准时，是为了让「审的 diff」就是「将来合入的内容」。
@@ -166,6 +192,10 @@ class WorkspaceManager:
     # ---------- 批准 / 丢弃 ----------
 
     async def approve(self, workspace: Workspace, commit_sha: str) -> str:
+        async with self.repo_lock(str(workspace.repo_path)):
+            return await self._approve(workspace, commit_sha)
+
+    async def _approve(self, workspace: Workspace, commit_sha: str) -> str:
         """把分支快进到 target。
 
         幂等：如果 target 已经包含这个提交（上次批准成功但状态没写进库），
@@ -187,12 +217,13 @@ class WorkspaceManager:
 
     async def cleanup(self, workspace: Workspace, *, delete_branch: bool = False) -> None:
         """删掉 worktree。分支默认保留（它是产物）。"""
-        repo = Git(workspace.repo_path)
-        await repo.worktree_remove(workspace.path)
-        await asyncio.to_thread(shutil.rmtree, workspace.path, ignore_errors=True)
-        if delete_branch:
-            await repo.delete_branch(workspace.branch)
-        await repo.worktree_prune()
+        async with self.repo_lock(str(workspace.repo_path)):
+            repo = Git(workspace.repo_path)
+            await repo.worktree_remove(workspace.path)
+            await asyncio.to_thread(shutil.rmtree, workspace.path, ignore_errors=True)
+            if delete_branch:
+                await repo.delete_branch(workspace.branch)
+            await repo.worktree_prune()
 
     # ---------- diff ----------
 

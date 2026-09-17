@@ -29,12 +29,14 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
         db.start()
         store = Store(db)
         runner = Runner(config, store)
-        scheduler = Scheduler(config, store, runner, WorkspaceManager(config))
+        workspaces = WorkspaceManager(config)
+        scheduler = Scheduler(config, store, runner, workspaces)
 
         app.state.config = config
         app.state.db = db
         app.state.store = store
         app.state.runner = runner
+        app.state.workspaces = workspaces
         app.state.scheduler = scheduler
 
         if start_scheduler:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -15,6 +16,7 @@ from codingstorm.models import (
     TaskStatus,
 )
 from codingstorm.store import Store
+from codingstorm.workspace import RebaseConflict, Workspace
 
 router = APIRouter(prefix="/api")
 
@@ -130,6 +132,98 @@ async def cancel_task(request: Request, task_id: str) -> TaskOut:
     runner = request.app.state.runner
     await store.set_status(task_id, TaskStatus.CANCELLED)
     await runner.kill(task_id)
+    refreshed = await store.get_task(task_id)
+    assert refreshed is not None
+    return refreshed
+
+
+# ---------- 审阅 ----------
+
+
+async def _workspace_for(request: Request, task_id: str):
+    """从任务记录还原出 Workspace（审批发生在任务跑完之后，内存里已经没有它了）。"""
+    store = _store(request)
+    raw = await store.get_task_raw(task_id)
+    if raw is None:
+        raise HTTPException(404, "任务不存在")
+    if not raw["worktree_path"] or not raw["branch"]:
+        raise HTTPException(409, "该任务还没有工作区（可能还没执行过）")
+
+    project = await store.get_project(raw["project_id"])
+    if project is None:
+        raise HTTPException(404, "项目不存在")
+
+    workspace = Workspace(
+        path=Path(raw["worktree_path"]),
+        repo_path=Path(project.repo_path),
+        branch=raw["branch"],
+        base_commit=raw["base_commit"] or "",
+        target_branch=project.target_branch,
+    )
+    return store, raw, workspace
+
+
+@router.get("/tasks/{task_id}/diff")
+async def get_diff(request: Request, task_id: str) -> dict:
+    """审的这份 diff 就是将来合入的内容（分支在收尾时已经 rebase 到最新 target）。"""
+    _, raw, workspace = await _workspace_for(request, task_id)
+    wm = request.app.state.workspaces
+    try:
+        return {
+            "diff": await wm.diff(workspace),
+            "stat": await wm.diff_stat(workspace),
+            "base": workspace.target_branch,
+            "branch": workspace.branch,
+            "commit_sha": raw["commit_sha"],
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"生成 diff 失败: {exc}") from exc
+
+
+@router.post("/tasks/{task_id}/approve", response_model=TaskOut)
+async def approve_task(request: Request, task_id: str) -> TaskOut:
+    """批准即合并。走 update-ref 快进，幂等。"""
+    store, _raw, workspace = await _workspace_for(request, task_id)
+    task = await store.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, "任务不存在")
+    if task.status != TaskStatus.AWAITING_REVIEW:
+        raise HTTPException(409, f"任务状态为 {task.status}，只有待审的任务能批准")
+
+    wm = request.app.state.workspaces
+    raw = await store.get_task_raw(task_id)
+    try:
+        merged_sha = await wm.approve(workspace, raw["commit_sha"])
+    except RebaseConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, f"合并失败: {exc}") from exc
+
+    await store.set_status(
+        task_id, TaskStatus.MERGED, merge_commit_sha=merged_sha, error_text=None
+    )
+    # 提交已经在 target 可达了，worktree 和分支都可以收掉
+    await wm.cleanup(workspace, delete_branch=True)
+
+    refreshed = await store.get_task(task_id)
+    assert refreshed is not None
+    return refreshed
+
+
+@router.post("/tasks/{task_id}/discard", response_model=TaskOut)
+async def discard_task(request: Request, task_id: str) -> TaskOut:
+    """丢弃：删掉 worktree 和分支，target 不受影响。"""
+    store, _raw, workspace = await _workspace_for(request, task_id)
+    task = await store.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, "任务不存在")
+    if task.status not in (TaskStatus.AWAITING_REVIEW, TaskStatus.FAILED, TaskStatus.INTERRUPTED):
+        raise HTTPException(409, f"任务状态为 {task.status}，不能丢弃")
+
+    wm = request.app.state.workspaces
+    await wm.cleanup(workspace, delete_branch=True)
+    await store.set_status(task_id, TaskStatus.DISCARDED)
+
     refreshed = await store.get_task(task_id)
     assert refreshed is not None
     return refreshed

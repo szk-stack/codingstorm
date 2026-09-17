@@ -231,6 +231,7 @@ async function openTask(id, tab = 'output') {
   renderDetail();
   await loadTasks();
   await loadContext();
+  await loadUsage(id);
   switchTab(tab);
   writeHash(id, tab);
   connectWs(id);
@@ -325,6 +326,40 @@ async function doCancel() {
   } catch (err) {
     toast(`取消失败：${err.message}`, true);
   }
+}
+
+async function loadUsage(taskId) {
+  const box = $('#usage');
+  try {
+    renderUsage(await api(`/api/tasks/${taskId}/attempts`));
+  } catch (_) {
+    box.textContent = '';
+  }
+}
+
+/** 用量按 attempt 分行。沉淀那步单列 —— 它是每个任务的固定开销，混在一起就看不见了。 */
+function renderUsage(attempts) {
+  const box = $('#usage');
+  box.replaceChildren();
+  if (!attempts.length) return;
+
+  const lines = [];
+  let total = null;
+  for (const a of attempts) {
+    const label = a.origin === 'sediment' ? '记录沉淀' : '执行任务';
+    const cost = a.cost_usd != null ? `  $${a.cost_usd.toFixed(4)}` : '';
+    if (a.cost_usd != null) total = (total ?? 0) + a.cost_usd;
+    lines.push(
+      `${label}  in=${a.input_tokens ?? 0}  out=${a.output_tokens ?? 0}` +
+      `  cache读=${a.cache_read_tokens ?? 0}${cost}`
+    );
+  }
+  if (total != null) {
+    lines.push(`合计 $${total.toFixed(4)}${attempts[0].price_version ? `（价目 ${attempts[0].price_version}）` : ''}`);
+  } else {
+    lines.push('（未配置价目表，只统计 token）');
+  }
+  box.textContent = lines.join('\n');
 }
 
 async function loadDiff() {
@@ -490,7 +525,7 @@ function connectWs(taskId) {
       renderDetail();
       renderTasks();
       if (prev !== msg.task.status) {
-        if (msg.task.status === 'awaiting_review') loadDiff();
+        if (msg.task.status === 'awaiting_review') { loadDiff(); loadUsage(msg.task.id); }
         if (msg.task.status === 'merged' || msg.task.status === 'discarded') {
           $('#stream').append(el('div', { class: 'ev ev-init', text: `— 任务${STATUS_LABEL[msg.task.status]} —` }));
         }

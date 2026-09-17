@@ -236,11 +236,49 @@ class Store:
         rows = await self.db.query(
             "SELECT attempt_no, session_id, model, exit_code, result_subtype, is_error,"
             " num_turns, input_tokens, output_tokens, cache_read_tokens,"
-            " cache_creation_tokens, origin, started_at, finished_at"
+            " cache_creation_tokens, cost_usd, price_version, origin, started_at, finished_at"
             " FROM attempts WHERE task_id = ? ORDER BY attempt_no",
             (task_id,),
         )
         return [AttemptOut(**{k: r[k] for k in r.keys()}) for r in rows]
+
+    async def usage_summary(
+        self, *, project_id: str | None = None, origin: str | None = None
+    ) -> list[sqlite3.Row]:
+        clauses, params = [], []
+        if project_id:
+            clauses.append("t.project_id = ?")
+            params.append(project_id)
+        if origin:
+            clauses.append("a.origin = ?")
+            params.append(origin)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return await self.db.query(
+            f"""
+            SELECT COALESCE(a.model, '未知') AS model,
+                   COUNT(*) AS attempts,
+                   COALESCE(SUM(a.input_tokens), 0)  AS input_tokens,
+                   COALESCE(SUM(a.output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(a.cache_read_tokens), 0) AS cache_read_tokens,
+                   COALESCE(SUM(a.cache_creation_tokens), 0) AS cache_creation_tokens,
+                   SUM(a.cost_usd) AS cost_usd
+              FROM attempts a
+              JOIN tasks t ON t.id = a.task_id
+              {where}
+             GROUP BY COALESCE(a.model, '未知')
+             ORDER BY attempts DESC
+            """,
+            params,
+        )
+
+    async def count_attempts(self, *, origin: str | None = None) -> int:
+        if origin:
+            row = await self.db.query_one(
+                "SELECT COUNT(*) AS c FROM attempts WHERE origin = ?", (origin,)
+            )
+        else:
+            row = await self.db.query_one("SELECT COUNT(*) AS c FROM attempts")
+        return int(row["c"]) if row else 0
 
     # ---------- 事件 ----------
 

@@ -16,6 +16,8 @@ from codingstorm.config import Config
 from codingstorm.context import ContextStore
 from codingstorm.db import Database
 from codingstorm.events import EventBus
+from codingstorm.guard import GuardInstaller
+from codingstorm.pricing import PriceTable
 from codingstorm.runner import Runner
 from codingstorm.scheduler import Scheduler
 from codingstorm.store import Store
@@ -28,6 +30,19 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         config.ensure_dirs()
+
+        # 装配边界拦截钩子。`--settings` 是**合并**进用户配置的（Phase 0 附带实测过），
+        # 所以凭证等设置不受影响。
+        guard_settings = GuardInstaller(config).install()
+        if guard_settings is not None:
+            config.claude.settings_file = guard_settings
+
+        prices = PriceTable.load(
+            config.pricing.prices_file or (config.root / "prices.toml")
+        )
+        if not prices.configured:
+            log.info("未配置价目表（%s），成本将留空", config.root / "prices.toml")
+
         db = Database(config.db_path)
         db.start()
         store = Store(db)
@@ -41,7 +56,7 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
         runner = Runner(config, store, on_event=on_event)
         workspaces = WorkspaceManager(config)
         contexts = ContextStore(config)
-        scheduler = Scheduler(config, store, runner, workspaces, contexts)
+        scheduler = Scheduler(config, store, runner, workspaces, contexts, prices)
 
         app.state.config = config
         app.state.db = db
@@ -50,6 +65,7 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
         app.state.runner = runner
         app.state.workspaces = workspaces
         app.state.contexts = contexts
+        app.state.prices = prices
         app.state.scheduler = scheduler
 
         if start_scheduler:

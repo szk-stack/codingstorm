@@ -108,6 +108,32 @@ class AttemptOut(BaseModel):
     output_tokens: int | None = None
     cache_read_tokens: int | None = None
     cache_creation_tokens: int | None = None
+    cost_usd: float | None = None
+    price_version: str | None = None
     origin: str = "task"
     started_at: str | None = None
     finished_at: str | None = None
+
+
+class ModelUsage(BaseModel):
+    model: str | None = None
+    attempts: int
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    cost_usd: float | None = None
+
+
+class UsageOut(BaseModel):
+    """花钱可追溯：token 按模型和来源分开统计。
+
+    沉淀那步的开销单列 —— 它是每个任务的固定成本，混进任务里就看不见了。
+    """
+    total_attempts: int
+    task_attempts: int
+    sediment_attempts: int
+    by_model: list[ModelUsage]
+    price_version: str = ""
+    prices_configured: bool = False
+    note: str = ""

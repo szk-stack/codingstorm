@@ -172,6 +172,19 @@ button.danger { background: #fff; color: var(--del-fg); border-color: #fca5a5; }
 .row { display: flex; gap: 6px; }
 #doc-editor-title { font-family: var(--mono); font-size: 11.5px; margin-bottom: 6px; }
 
+.usage {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+}
+.usage:empty { display: none; }
+.usage .cost { color: var(--text); }
+
 .actions { display: flex; gap: 8px; margin-top: 14px; }
 
 /* ---------- 执行流 ---------- */

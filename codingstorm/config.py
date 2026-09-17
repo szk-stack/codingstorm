@@ -44,6 +44,22 @@ class ClaudeConfig(BaseModel):
     # 装配 PreToolUse hook 的 settings 文件；None 表示用 ~/.claude/settings.json
     settings_file: Path | None = None
 
+    # ---- 边界拦截 ----
+    # bypassPermissions 会绕过所有权限检查，所以 permissions.deny 不可靠，
+    # 边界只能靠 PreToolUse hook（它不受权限模式影响）。
+    guard_enabled: bool = True
+    guard_block_push: bool = True
+    # 默认关闭：会一并挡掉正常的依赖安装，容易误伤
+    guard_block_network: bool = False
+    guard_extra_deny: list[str] = []
+    guard_allow: list[str] = []
+
+
+class PricingConfig(BaseModel):
+    # 价目表文件。**成本必须自己按 token 算** —— 第三方中转下
+    # `total_cost_usd` 是按另一端价目算的，跟实际付费对不上。
+    prices_file: Path | None = None
+
 
 class Config(BaseModel):
     root: Path = DEFAULT_ROOT
@@ -52,6 +68,7 @@ class Config(BaseModel):
     task: TaskConfig = Field(default_factory=TaskConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
+    pricing: PricingConfig = Field(default_factory=PricingConfig)
 
     @property
     def db_path(self) -> Path:

@@ -15,12 +15,14 @@ from codingstorm.models import (
     AttemptOut,
     ContextOut,
     DocOut,
+    ModelUsage,
     ProjectCreate,
     ProjectOut,
     TaskCreate,
     TaskOut,
     TaskStatus,
     TextPayload,
+    UsageOut,
 )
 from codingstorm.store import Store
 from codingstorm.workspace import RebaseConflict, Workspace
@@ -245,6 +247,46 @@ async def discard_task(request: Request, task_id: str) -> TaskOut:
     refreshed = await store.get_task(task_id)
     assert refreshed is not None
     return refreshed
+
+
+@router.get("/usage", response_model=UsageOut)
+async def get_usage(request: Request, project_id: str | None = None) -> UsageOut:
+    """花钱可追溯。
+
+    ⚠️ 不给 `total_cost_usd` 留位置：那是 Claude Code 按另一端价目算的，
+    跟实际付费对不上。这里只按 token 和**用户自己配的**价目表算。
+    """
+    store = _store(request)
+    prices = request.app.state.prices
+    rows = await store.usage_summary(project_id=project_id)
+
+    by_model = [
+        ModelUsage(
+            model=r["model"],
+            attempts=r["attempts"],
+            input_tokens=r["input_tokens"],
+            output_tokens=r["output_tokens"],
+            cache_read_tokens=r["cache_read_tokens"],
+            cache_creation_tokens=r["cache_creation_tokens"],
+            cost_usd=r["cost_usd"],
+        )
+        for r in rows
+    ]
+    note = ""
+    if not prices.configured:
+        note = (
+            f"未配置价目表。在 {request.app.state.config.root / 'prices.toml'} 里填入"
+            "各模型的单价（每百万 token）后，成本会自动出现。"
+        )
+    return UsageOut(
+        total_attempts=await store.count_attempts(),
+        task_attempts=await store.count_attempts(origin="task"),
+        sediment_attempts=await store.count_attempts(origin="sediment"),
+        by_model=by_model,
+        price_version=prices.version,
+        prices_configured=prices.configured,
+        note=note,
+    )
 
 
 # ---------- 上下文 ----------

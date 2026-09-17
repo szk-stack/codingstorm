@@ -1,0 +1,25 @@
+# 价目表示例。复制为 {root}/prices.toml 后按实际单价填写。
+#
+# **为什么必须自己填**：Claude Code 的 `result.total_cost_usd` 是按 **Claude 的价目**
+# 算的。走第三方中转时（比如 DeepSeek 端点），那个数字跟实际付费完全对不上 ——
+# 实测一句「Reply with exactly: OK」它报 0.26507 美元。
+#
+# 所以 codingstorm 只按 token 数 × 你填的单价来算成本。
+# **没填的模型成本留空** —— 宁可显示「未配置」，也不给一个假数字。
+#
+# 单价单位：**每百万 token** 的价格（与各家长度一致的写法）。
+#
+# `version` 会跟成本一起落库。改了价目表不会改写历史成本 —— 那等于篡改账本。
+
+version = "2026-09-18"
+
+# 按你实际用的模型名填写。名字可以从任务详情的用量里看到。
+# [models."deepseek-v4-flash"]
+# input = 0.14
+# output = 0.28
+# cache_read = 0.014          # 不填则退化成 input 单价
+# cache_creation = 0.14
+
+# [models."deepseek-v4-pro"]
+# input = 0.55
+# output = 2.19

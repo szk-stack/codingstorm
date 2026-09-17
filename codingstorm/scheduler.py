@@ -19,6 +19,7 @@ from typing import Any
 from codingstorm.config import Config
 from codingstorm.context import ContextStore
 from codingstorm.models import TaskStatus
+from codingstorm.pricing import PriceTable, Usage
 from codingstorm.runner import (
     RunOutcome,
     Runner,
@@ -40,15 +41,37 @@ class Scheduler:
         runner: Runner,
         workspaces: WorkspaceManager,
         contexts: ContextStore | None = None,
+        prices: PriceTable | None = None,
     ):
         self.config = config
         self.store = store
         self.runner = runner
         self.workspaces = workspaces
         self.contexts = contexts or ContextStore(config)
+        self.prices = prices or PriceTable.empty()
         self._loop_task: asyncio.Task | None = None
         self._running: dict[str, asyncio.Task] = {}
         self._stopping = asyncio.Event()
+
+    def _cost_fields(
+        self,
+        model: str | None,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_creation_tokens: int,
+    ) -> dict[str, Any]:
+        """按 token 算成本。价目表里没有这个模型就留空 —— 不瞎猜。
+
+        不能用 `total_cost_usd`：那是按另一端的价目算的，跟实际付费对不上。
+        连 `price_version` 一起落库，是为了**改价目表不能改写历史成本**。
+        """
+        usage = Usage(input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+        cost = self.prices.cost(model, usage)
+        if cost is None:
+            return {}
+        return {"cost_usd": cost, "price_version": self.prices.version}
 
     # ---------- 生命周期 ----------
 
@@ -217,6 +240,13 @@ class Scheduler:
             cache_read_tokens=outcome.cache_read_tokens,
             session_id=outcome.session_id,
             model=outcome.model,
+            **self._cost_fields(
+                outcome.model,
+                input_tokens=outcome.input_tokens,
+                output_tokens=outcome.output_tokens,
+                cache_read_tokens=outcome.cache_read_tokens,
+                cache_creation_tokens=outcome.cache_creation_tokens,
+            ),
         )
 
         if not outcome.ok:
@@ -313,4 +343,11 @@ class Scheduler:
             output_tokens=result.output_tokens,
             cache_read_tokens=result.cache_read_tokens,
             cache_creation_tokens=result.cache_creation_tokens,
+            **self._cost_fields(
+                result.model,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                cache_read_tokens=result.cache_read_tokens,
+                cache_creation_tokens=result.cache_creation_tokens,
+            ),
         )

@@ -31,9 +31,36 @@ wall_clock_timeout_s = 3600
 # 退避最长到 38 秒一轮，所以别设得比它小太多。
 idle_timeout_s = 300
 
+[context]
+# 任务结束后自动生成变更记录。
+# **这是整套上下文机制能否活过三个月的前提** —— 靠人记得维护的文档一定会腐烂
+# （Cline 的 Memory Bank 就是这么死的）。代价是每个任务多一次轻量模型调用，
+# 而由于 Claude Code 的固定开销很高，这一次调用大致会让成本翻倍。
+sediment = true
+sediment_max_diff_bytes = 24576
+# 注入 prompt 的变更记录上限。它会一直增长，全量塞进去迟早挤爆上下文。
+journal_prompt_chars = 6000
+
+[pricing]
+# 价目表。**不填的话成本留空** —— `total_cost_usd` 是按另一端价目算的，不能用。
+# 参考同目录的 prices.example.toml。
+# prices_file = "~/codingstorm/prices.toml"
+
 [claude]
 binary = "claude"
-# 无人值守必须全自动放行；边界靠 PreToolUse hook 拦（见 docs/architecture.md 3.3）。
+# 无人值守必须全自动放行；边界靠下面的 hook 拦。
 permission_mode = "bypassPermissions"
-# 装了拦截 hook 的 settings 文件。不设则用 ~/.claude/settings.json。
-# settings_file = "~/codingstorm/hooks-settings.json"
+# settings_file 一般不用管 —— 启用 guard 后由程序自动接管（--settings 是合并语义）
+
+# ---- 边界拦截 ----
+# bypassPermissions 会绕过所有权限检查，所以 permissions.deny 不可靠，
+# 只能靠 PreToolUse hook（它不受权限模式影响，Phase 0 已实测）。
+guard_enabled = true
+guard_block_push = true
+# 默认关：开了会连带挡掉正常的依赖安装，容易误伤
+guard_block_network = false
+# 追加自定义拦截规则（正则，匹配整条 Bash 命令）
+guard_extra_deny = []
+# 白名单，命中则不拦（优先级高于所有 deny 规则）
+guard_allow = []
+

@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from codingstorm.api import STATIC_DIR, pages, router
 from codingstorm.config import Config
+from codingstorm.context import ContextStore
 from codingstorm.db import Database
 from codingstorm.events import EventBus
 from codingstorm.runner import Runner
@@ -39,7 +40,8 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
 
         runner = Runner(config, store, on_event=on_event)
         workspaces = WorkspaceManager(config)
-        scheduler = Scheduler(config, store, runner, workspaces)
+        contexts = ContextStore(config)
+        scheduler = Scheduler(config, store, runner, workspaces, contexts)
 
         app.state.config = config
         app.state.db = db
@@ -47,6 +49,7 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
         app.state.bus = bus
         app.state.runner = runner
         app.state.workspaces = workspaces
+        app.state.contexts = contexts
         app.state.scheduler = scheduler
 
         if start_scheduler:

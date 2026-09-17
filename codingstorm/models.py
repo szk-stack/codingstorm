@@ -49,6 +49,24 @@ class TaskCreate(BaseModel):
     priority: int = 0
 
 
+class TextPayload(BaseModel):
+    text: str
+
+
+class DocOut(BaseModel):
+    path: str
+    size: int
+
+
+class ContextOut(BaseModel):
+    pointer: str
+    pointer_bytes: int
+    pointer_soft_limit: int
+    journal: str
+    index: str
+    docs: list[DocOut]
+
+
 class ProjectOut(BaseModel):
     id: str
     name: str

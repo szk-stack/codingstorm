@@ -9,14 +9,18 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
+from codingstorm.context import POINTER_SOFT_LIMIT_BYTES
 from codingstorm.diff_render import render_diff
 from codingstorm.models import (
     AttemptOut,
+    ContextOut,
+    DocOut,
     ProjectCreate,
     ProjectOut,
     TaskCreate,
     TaskOut,
     TaskStatus,
+    TextPayload,
 )
 from codingstorm.store import Store
 from codingstorm.workspace import RebaseConflict, Workspace
@@ -241,6 +245,79 @@ async def discard_task(request: Request, task_id: str) -> TaskOut:
     refreshed = await store.get_task(task_id)
     assert refreshed is not None
     return refreshed
+
+
+# ---------- 上下文 ----------
+
+
+def _contexts(request: Request):
+    return request.app.state.contexts
+
+
+async def _require_project(request: Request, project_id: str) -> ProjectOut:
+    project = await _store(request).get_project(project_id)
+    if project is None:
+        raise HTTPException(404, "项目不存在")
+    return project
+
+
+@router.get("/projects/{project_id}/context", response_model=ContextOut)
+async def get_context(request: Request, project_id: str) -> ContextOut:
+    project = await _require_project(request, project_id)
+    ctx_store = _contexts(request)
+    pointer = ctx_store.read_pointer(project.name)
+    return ContextOut(
+        pointer=pointer,
+        pointer_bytes=len(pointer.encode("utf-8")),
+        pointer_soft_limit=POINTER_SOFT_LIMIT_BYTES,
+        journal=ctx_store.read_journal(project.name),
+        index=ctx_store.read_index(project.name),
+        docs=[DocOut(path=d.path, size=d.size) for d in ctx_store.list_docs(project.name)],
+    )
+
+
+@router.put("/projects/{project_id}/context/pointer", response_model=ContextOut)
+async def put_pointer(request: Request, project_id: str, payload: TextPayload) -> ContextOut:
+    project = await _require_project(request, project_id)
+    _contexts(request).write_pointer(project.name, payload.text)
+    return await get_context(request, project_id)
+
+
+@router.put("/projects/{project_id}/context/index", response_model=ContextOut)
+async def put_index(request: Request, project_id: str, payload: TextPayload) -> ContextOut:
+    project = await _require_project(request, project_id)
+    _contexts(request).write_index(project.name, payload.text)
+    return await get_context(request, project_id)
+
+
+@router.get("/projects/{project_id}/context/docs/{path:path}")
+async def get_doc(request: Request, project_id: str, path: str) -> dict:
+    project = await _require_project(request, project_id)
+    try:
+        return {"path": path, "text": _contexts(request).read_doc(project.name, path)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError:
+        raise HTTPException(404, "文档不存在") from None
+
+
+@router.put("/projects/{project_id}/context/docs/{path:path}")
+async def put_doc(request: Request, project_id: str, path: str, payload: TextPayload) -> dict:
+    project = await _require_project(request, project_id)
+    try:
+        _contexts(request).write_doc(project.name, path, payload.text)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"path": path, "text": payload.text}
+
+
+@router.delete("/projects/{project_id}/context/docs/{path:path}", status_code=204)
+async def delete_doc(request: Request, project_id: str, path: str) -> None:
+    project = await _require_project(request, project_id)
+    try:
+        _contexts(request).delete_doc(project.name, path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 # ---------- 页面 ----------

@@ -17,7 +17,7 @@ import uuid
 from typing import Any
 
 from codingstorm.config import Config
-from codingstorm.context import build_prompt
+from codingstorm.context import ContextStore
 from codingstorm.models import TaskStatus
 from codingstorm.runner import (
     RunOutcome,
@@ -25,6 +25,7 @@ from codingstorm.runner import (
     kill_process_group,
     pid_is_alive,
 )
+from codingstorm.sediment import sediment_task
 from codingstorm.store import Store
 from codingstorm.workspace import WorkspaceManager
 
@@ -38,11 +39,13 @@ class Scheduler:
         store: Store,
         runner: Runner,
         workspaces: WorkspaceManager,
+        contexts: ContextStore | None = None,
     ):
         self.config = config
         self.store = store
         self.runner = runner
         self.workspaces = workspaces
+        self.contexts = contexts or ContextStore(config)
         self._loop_task: asyncio.Task | None = None
         self._running: dict[str, asyncio.Task] = {}
         self._stopping = asyncio.Event()
@@ -172,13 +175,21 @@ class Scheduler:
             if fresh is None or fresh.status != TaskStatus.RUNNING:
                 log.info("任务 %s 在准备阶段被中断，放弃执行", task_id)
                 return
+            ctx = self.contexts.ensure(project.name)
             outcome = await self.runner.run(
                 task_id,
                 project.name,
-                prompt=build_prompt(task),
+                prompt=self.contexts.build_prompt(
+                    project.name,
+                    task,
+                    max_journal_chars=self.config.context.journal_prompt_chars,
+                ),
                 session_id=str(uuid.uuid4()),
                 cwd=workspace.path,
                 attempt_no=attempt_no,
+                # 上下文目录在 worktree 之外，靠 --add-dir 授权访问 ——
+                # 这样完全不用碰被调度仓库的 .gitignore，也不污染它的历史
+                context_dir=ctx.root,
             )
         except asyncio.CancelledError:
             await self.store.set_status(task_id, TaskStatus.INTERRUPTED, error_text="任务被取消")
@@ -214,9 +225,9 @@ class Scheduler:
             log.warning("任务 %s 失败: %s", task_id, reason)
             return
 
-        await self._finalize_success(task_id, task, workspace)
+        await self._finalize_success(task_id, task, project.name, workspace)
 
-    async def _finalize_success(self, task_id: str, task, workspace) -> None:
+    async def _finalize_success(self, task_id: str, task, project_name: str, workspace) -> None:
         """提交改动、rebase 到最新 target、置为待审。
 
         失败**不删工作区** —— 现场要留着排查。
@@ -248,4 +259,58 @@ class Scheduler:
             task_id,
             workspace.branch,
             "有改动" if result.had_changes else "无改动",
+        )
+        if result.had_changes:
+            await self._sediment(task, project_name, workspace)
+
+    async def _sediment(self, task, project_name: str, workspace) -> None:
+        """任务结束后自动写变更记录。
+
+        **必须自动** —— 需要人记得去维护的文档一定会腐烂（Cline 的 Memory Bank 就是这么死的）。
+        这是每个任务的一笔固定开销，单独记一条 attempt（origin=sediment），
+        否则这部分成本会凭空消失。
+        """
+        if not self.config.context.sediment:
+            return
+        try:
+            diff = await self.workspaces.diff(workspace)
+            stat = await self.workspaces.diff_stat(workspace)
+        except Exception:
+            log.exception("取 diff 失败，跳过沉淀")
+            return
+
+        attempt_no = await self.store.next_attempt_no(task.id)
+        await self.store.start_attempt(task.id, attempt_no, origin="sediment")
+        session_id = str(uuid.uuid4())
+        try:
+            result = await sediment_task(
+                self.config,
+                self.contexts,
+                project_name,
+                task,
+                workspace.path,
+                diff=diff,
+                stat=stat,
+                session_id=session_id,
+            )
+        except Exception as exc:
+            log.exception("沉淀异常")
+            await self.store.finish_attempt(
+                task.id, attempt_no, is_error=True, error_text=str(exc)
+            )
+            return
+
+        await self.store.finish_attempt(
+            task.id,
+            attempt_no,
+            session_id=session_id,
+            model=result.model,
+            result_subtype="skipped" if result.skipped else ("error" if result.error else "success"),
+            is_error=bool(result.error),
+            error_text=result.error,
+            duration_ms=result.duration_ms,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_read_tokens=result.cache_read_tokens,
+            cache_creation_tokens=result.cache_creation_tokens,
         )

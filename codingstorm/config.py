@@ -28,6 +28,16 @@ class TaskConfig(BaseModel):
     idle_timeout_s: int = Field(default=300, ge=30)
 
 
+class ContextConfig(BaseModel):
+    # 任务结束后自动生成变更记录。
+    # **这是整套机制能否活过三个月的前提** —— 靠人记得去维护的文档一定会腐烂
+    # （Cline 的 Memory Bank 就是这么死的）。代价是每个任务多一次轻量模型调用。
+    sediment: bool = True
+    sediment_max_diff_bytes: int = Field(default=24 * 1024, ge=1024)
+    # 注入 prompt 的变更记录上限；它会一直增长，全量塞进去迟早挤爆上下文
+    journal_prompt_chars: int = Field(default=6000, ge=500)
+
+
 class ClaudeConfig(BaseModel):
     binary: str = "claude"
     permission_mode: str = "bypassPermissions"
@@ -40,6 +50,7 @@ class Config(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     task: TaskConfig = Field(default_factory=TaskConfig)
+    context: ContextConfig = Field(default_factory=ContextConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
 
     @property

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import signal
 from collections.abc import Awaitable, Callable
@@ -25,6 +26,8 @@ from typing import Any
 
 from codingstorm.config import Config
 from codingstorm.store import Store, utcnow
+
+log = logging.getLogger("codingstorm.runner")
 
 # 落库的语义事件；其余（thinking_tokens / stream_event / api_retry ...）一律丢弃
 PERSISTED_EVENT_TYPES = frozenset({"init", "assistant", "tool_result", "result"})
@@ -186,6 +189,14 @@ class Runner:
 
         cmd = self.build_command(prompt, session_id=session_id, context_dir=context_dir)
         outcome = RunOutcome(session_id=session_id)
+
+        # 记下实际用的参数（prompt 太长，略去）——
+        # 排查「hook 没生效」这类问题时，第一件事就是确认 --settings 到底传没传
+        log.info(
+            "启动 claude: cwd=%s %s",
+            cwd,
+            " ".join(cmd[:1] + ["<prompt>"] + cmd[3:]),
+        )
 
         with log_path.open("wb") as out_f, err_path.open("wb") as err_f:
             proc = await asyncio.create_subprocess_exec(

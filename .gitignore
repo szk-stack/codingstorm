@@ -25,3 +25,6 @@ logs/
 worktrees/
 repos/
 contexts/
+
+# spike 产物
+scripts/spike/out/

@@ -1,0 +1,39 @@
+# codingstorm 配置示例。
+#
+# 复制为 codingstorm.toml 后按需修改，启动时用 --config 指定：
+#     codingstorm --config codingstorm.toml
+#
+# 不指定 --config 时全部使用下面的默认值。
+
+# 数据根目录。执行机上的所有产物都放这里。
+# 注意 /srv 需要 sudo，所以默认放在家目录下。
+root = "~/codingstorm"
+
+[server]
+# 默认只监听本机。要远程访问请自己加反向代理或改这里。
+host = "127.0.0.1"
+port = 8787
+
+[scheduler]
+# 全局并发上限。**由内存决定** —— 每个 Claude Code 进程约 200-400MB，
+# 执行机可用内存不大时保持 2 左右，否则会 OOM。
+#
+# 项目内永远是串行（硬约束），这个上限只在项目之间起作用。
+max_concurrent = 2
+poll_interval_s = 1.0
+
+[task]
+# 不设上限的话，一个死循环 agent 能烧一整晚。
+max_turns = 50
+# 墙钟上限：超过就整组 SIGTERM→SIGKILL。
+wall_clock_timeout_s = 3600
+# 空闲上限：这么久没有任何输出就判定卡死。Claude Code 的 api_retry
+# 退避最长到 38 秒一轮，所以别设得比它小太多。
+idle_timeout_s = 300
+
+[claude]
+binary = "claude"
+# 无人值守必须全自动放行；边界靠 PreToolUse hook 拦（见 docs/architecture.md 3.3）。
+permission_mode = "bypassPermissions"
+# 装了拦截 hook 的 settings 文件。不设则用 ~/.claude/settings.json。
+# settings_file = "~/codingstorm/hooks-settings.json"

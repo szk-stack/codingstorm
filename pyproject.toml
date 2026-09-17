@@ -18,6 +18,9 @@ dev = [
     "httpx>=0.27",
 ]
 
+[project.scripts]
+codingstorm = "codingstorm.app:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["codingstorm"]
 

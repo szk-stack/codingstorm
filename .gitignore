@@ -28,3 +28,6 @@ contexts/
 
 # spike 产物
 scripts/spike/out/
+
+# 浏览器验收截图
+.shots/

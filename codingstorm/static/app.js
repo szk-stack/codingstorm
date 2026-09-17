@@ -185,9 +185,27 @@ async function submitTask(form) {
   }
 }
 
+/** 路由形如 #/task/<id> 或 #/task/<id>/diff，便于分享链接和刷新后回到原处。 */
+function parseHash() {
+  const m = /^#\/task\/([A-Za-z0-9]+)(?:\/(diff|output))?$/.exec(location.hash || '');
+  return m ? { taskId: m[1], tab: m[2] || 'output' } : null;
+}
+
+function writeHash(taskId, tab) {
+  const next = `#/task/${taskId}${tab && tab !== 'output' ? '/' + tab : ''}`;
+  if (location.hash !== next) history.replaceState(null, '', next);
+}
+
+function switchTab(which) {
+  document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === which));
+  $('#pane-output').hidden = which !== 'output';
+  $('#pane-diff').hidden = which !== 'diff';
+  if (which === 'diff' && state.task) loadDiff();
+}
+
 // ---------------- 任务详情 ----------------
 
-async function openTask(id) {
+async function openTask(id, tab = 'output') {
   if (state.ws) { state.ws.close(); state.ws = null; }
   state.seen.clear();
   state.expanded.clear();
@@ -200,8 +218,19 @@ async function openTask(id) {
   $('#detail-panel').hidden = false;
 
   state.task = await api(`/api/tasks/${id}`);
+
+  // 深链进来时侧栏还没选中项目，任务列表会是空的 —— 跟着任务切过去
+  if (state.task.project_id !== state.projectId) {
+    state.projectId = state.task.project_id;
+    renderProjects();
+    const project = state.projects.find((p) => p.id === state.projectId);
+    if (project) $('#queue-title').textContent = `${project.name} 的任务`;
+  }
+
   renderDetail();
-  renderTasks();
+  await loadTasks();
+  switchTab(tab);
+  writeHash(id, tab);
   connectWs(id);
 }
 
@@ -463,12 +492,18 @@ function init() {
 
   document.querySelectorAll('.tab').forEach((btn) => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b === btn));
-      const which = btn.dataset.tab;
-      $('#pane-output').hidden = which !== 'output';
-      $('#pane-diff').hidden = which !== 'diff';
-      if (which === 'diff' && state.task) loadDiff();
+      switchTab(btn.dataset.tab);
+      if (state.task) writeHash(state.task.id, btn.dataset.tab);
     });
+  });
+
+  window.addEventListener('hashchange', () => {
+    const route = parseHash();
+    if (route && (!state.task || state.task.id !== route.taskId)) {
+      openTask(route.taskId, route.tab);
+    } else if (route && state.task) {
+      switchTab(route.tab);
+    }
   });
 
   // 任务提交表单挂在详情面板上方（动态建，避免 HTML 里重复一份）
@@ -488,7 +523,15 @@ function init() {
   form.addEventListener('submit', (e) => { e.preventDefault(); submitTask(e.target); });
   $('#tasks').after(form);
 
-  loadProjects();
+  loadProjects().then(() => {
+    const route = parseHash();
+    if (route) {
+      openTask(route.taskId, route.tab);
+    } else if (state.projects.length) {
+      // 首次进来直接选中第一个项目，免得看到空列表
+      selectProject(state.projects[0].id);
+    }
+  });
 }
 
 document.addEventListener('DOMContentLoaded', init);

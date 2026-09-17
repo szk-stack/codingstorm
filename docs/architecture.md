@@ -31,12 +31,17 @@
 claude -p <prompt>
   --output-format stream-json --verbose --include-partial-messages
   --session-id <uuid>
-  --max-turns <N>                    ← 必须有，否则死循环 agent 能烧一整晚
+  --max-turns <N>                     ← 必须有，否则死循环 agent 能烧一整晚
   --permission-mode bypassPermissions
   --add-dir <context_dir>
+  --disallowed-tools AskUserQuestion  ← 必须有，否则它会挂在那里等你回答
 ```
 
 cwd = 任务的工作目录（worktree）。`-p --output-format stream-json` 需要配 `--verbose`。
+
+**`--disallowed-tools AskUserQuestion` 是无人值守的必要条件。** 参考实现 `claude-queue-manager` 踩过这个坑：不禁掉提问工具，agent 会在需要澄清时停下来等输入，而队列里没有人在看 —— 任务永远挂住，还占着并发位。
+
+**用 `--session-id` 显式指定 UUID，不要用 `--continue`。** `--continue` 找的是 cwd 里最近的会话，多个任务共享目录时会串到别人的会话上。
 
 ### 3.2 输出是 NDJSON，每行一个事件
 
@@ -155,6 +160,8 @@ queued ──→ running ──→ awaiting_review ──→ merged
 
 - **不要把 stdout 用 PIPE 逐行 `readline()`**：asyncio 的 StreamReader 默认 limit 是 64 KiB，超长行直接抛 `ValueError` 且不消费缓冲区，之后每行都炸。而 `Write` 整个文件、`Read`/`Bash` 的输出轻松超过 64 KiB —— 解析器会在长任务里随机崩溃。
 - **改为把 stdout 重定向到每任务一个 NDJSON 日志文件，另起协程 tail 它**。一次解决行长、背压、崩溃丢日志三件事，而且这份原始日志正是回放和恢复所需。
+- **stderr 单独一个文件，不要合并进 stdout**。参考实现 `claude-queue-manager` 用了 `stderr=STDOUT`，结果 stderr 的杂音混进 JSON 流，解析器必须随时容忍失败。分开放，两个问题一起消失。
+- 即便如此，**单行解析失败也要降级为纯文本**，不能让一个畸形行打挂整个 tail 循环。
 - `stdin=DEVNULL`；`start_new_session=True` 建独立进程组（顺带覆盖 Claude 拉起的 bash/ripgrep）。
 
 ### 5.2 孤儿进程
@@ -176,6 +183,18 @@ queued ──→ running ──→ awaiting_review ──→ merged
 - UI 上要有强制失败按钮
 
 ### 5.5 分支与合并
+
+**指导原则（来自参考实现 agent-queue 的 README）：**
+
+> **worktree 是一次性执行空间；分支、任务历史、评论和会话尝试才是持久产物。**
+
+这条决定了什么可以随时丢弃、什么必须稳。worktree 出任何问题都可以直接删掉重建；分支一旦建立就是记录，不能随便动。
+
+**`delivered` 不属于任务状态。** agent-queue 刻意把它排除在 `TaskStatus` 之外，原文是：
+
+> close 是 worker 的完成事件，不是代码已在默认分支上的声明。
+
+对应到我们的设计：`awaiting_review` 是任务状态，**"已合并进 target"是集成动作的结果**，两者不能混为一谈。这也是为什么批准路径要独立、可重启、幂等。
 
 **rebase 和 `--no-ff` 是矛盾的** —— rebase 完再 `merge --no-ff` 照样生成合并提交，历史依然分叉，白搭一个改写历史的失败模式。
 
@@ -199,9 +218,13 @@ queued ──→ running ──→ awaiting_review ──→ merged
 - **`result` 事件是唯一权威判据**，崩在它落库和状态更新之间就全丢。靠原始日志文件在启动时重解析尾部，把 result / session_id / commit 捞回来
 - runner 顶层 try/finally 保证任何异常都离开 `running` 并释放信号量
 
-### 5.7 重试
+### 5.7 重试与僵尸锁
 
 失败后重试必须**重建 worktree 和分支**。旧 worktree 带着上次未提交的改动、且基于旧 base，直接复用会污染。
+
+**清理 worktree 时要先中止残留操作**：被 kill 的 agent 会留下半途的 rebase/merge 状态和 `index.lock`，后续所有 git 操作都会被它卡死。参考实现在这一步显式做了 `_abort_in_progress()`，必须保留。
+
+清理用 `git clean -fd`，**不要加 `-x`** —— `-x` 会连 gitignore 的缓存一起删（`node_modules`、`.venv`），下一个任务要花几分钟重新装。这是参考实现的刻意选择。
 
 ### 5.8 并发保护
 
@@ -375,3 +398,45 @@ while True:
 - **`total_cost_usd` 不可信**（第三方中转），成本只按 token 自算
 - Phase 0 若发现 hook 在 `bypassPermissions` 下不触发，需改用 `--permission-prompt-tool`（要写一个 MCP server，工作量增加）
 - 部署方式待定：倾向 systemd user service，`KillMode=mixed`，不用 Docker 以省内存
+
+---
+
+## 12. 参考实现与印证
+
+调研了两个同类项目。它们都没解决我们要解决的问题，但各自有值得抄的具体做法。
+
+### 12.1 `claude-queue-manager` —— 执行循环
+
+规模很小（`backend/app/` 下 8 个文件，`runner.py` 约 200 行），技术栈跟我们一致。**没有 git 集成、没有项目概念**，这两块要我们自己补。
+
+**值得抄：**
+
+| 做法 | 价值 |
+|---|---|
+| `--disallowed-tools AskUserQuestion` | 无人值守的必要条件，见 3.1 |
+| 启动时一行 SQL 把所有 `RUNNING` 重置 | `UPDATE tasks SET status='PENDING', pid=NULL, started_at=NULL WHERE status='RUNNING'` |
+| 18 行的 EventBus（`set` 存 `asyncio.Queue`，`put_nowait` 满了就丢） | 极简 pub/sub，够用 |
+| `claim_task` 用 `BEGIN IMMEDIATE` + `UPDATE ... AND status='PENDING'` 双保险 | 防重复认领 |
+
+**别抄：** 它的任务删除清理逻辑有 bug（`Path(None)` 抛 TypeError、`Path(".").unlink()` 抛 IsADirectoryError）。另外它用 `--continue` 做追问，多任务共享目录时会串会话 —— 我们用 `--session-id`。
+
+### 12.2 `agent-queue` —— 隔离与策略模型
+
+规模远超预期（2745 个 `.py`，PostgreSQL 必需，tmux 会话，alembic 迁移）。**跟我们的量级不是一个物种，不要试图对齐它的架构。**
+
+它用**可复用的槽位池**而非每任务新建 worktree，因此背上了几百行 salvage 逻辑（抢救前任的未提交改动、推进未推送的提交、清理僵尸锁）。**我们每任务新建 worktree，这些全部不需要** —— 但其中「中止残留 rebase/merge、清 `index.lock`」那一步必须保留（见 5.7）。
+
+**值得抄的设计判断：**
+
+- **worktree 是一次性执行空间，分支才是持久产物**（见 5.5）
+- **`delivered` 刻意排除在任务状态之外**（见 5.5）
+- **`clean -fd` 不带 `-x`**（见 5.7）
+- **markdown 当策略层**：`factory-policy.md` 自声明为 normative，其余文档只引用不重述，冲突时以它为准；profiles 用 **write-if-absent** 播种（已存在的不覆盖），漂移用 `aq doctor --check skills.installed_drift --fix` 修
+
+**别抄：** 槽位池、routing / playbook、PostgreSQL、层级任务图 —— 单人用全是负债。
+
+### 12.3 两个独立印证
+
+**① 按项目串行调度确实没人做。** 两个参考实现都用**全局 worker 池**：`claude-queue-manager` 是 `settings.workers`（默认 2），`agent-queue` 明写 "Workers are global identities reused across projects"。这正是我们的核心差异点。
+
+**② 上下文问题的解法方向一致。** `agent-queue` 靠 markdown 策略层 + prime 模板注入，`claude-queue-manager` 则完全没有上下文机制。和我们三层方案的方向吻合（详见 `context-design.md`）。

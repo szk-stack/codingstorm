@@ -81,6 +81,10 @@ class Git:
     async def ref_exists(self, ref: str) -> bool:
         return await self.ok("rev-parse", "--verify", "--quiet", ref)
 
+    async def branches(self) -> list[str]:
+        out = await self.run("for-each-ref", "--format=%(refname:short)", "refs/heads/")
+        return [line.strip() for line in out.splitlines() if line.strip()]
+
     async def is_ancestor(self, ancestor: str, descendant: str) -> bool:
         """用于判断「这个提交是否已经包含在目标分支里」—— 批准幂等的关键。"""
         return await self.ok("merge-base", "--is-ancestor", ancestor, descendant)

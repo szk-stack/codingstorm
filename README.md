@@ -33,9 +33,13 @@ pip install -e .
 
 ### 2. 准备被调度的仓库
 
+**接入已有的仓库** —— 先做成裸克隆放到服务器上：
+
 ```bash
 git clone --bare <你的仓库> ~/codingstorm/repos/demo.git
 ```
+
+**全新的项目** —— 跳过这步，注册时会自动建好空仓库（见第 5 步）。
 
 **用裸克隆。** 批准走的是 `update-ref`，它只推进引用、**不同步工作树** —— 非裸仓库在第一次批准后
 主工作区会与 HEAD 脱节，`git status` 看起来像「所有文件都被删了」。代码会对非裸仓库打一条告警。
@@ -77,19 +81,52 @@ python -m codingstorm.app --config codingstorm.toml
 
 ### 5. 注册项目
 
-浏览器打开 `http://127.0.0.1:8787/`，在「项目」栏填三个字段点注册。或者直接调接口：
+浏览器打开 `http://127.0.0.1:8787/`，在「项目」栏填个名字点注册。或者直接调接口：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/api/projects \
   -H 'content-type: application/json' \
-  -d '{"name":"demo","repo_path":"/home/me/codingstorm/repos/demo.git","target_branch":"main"}'
+  -d '{"name":"demo"}'
 ```
 
-`name` 只允许字母、数字和 `._-`，且全局唯一。
+全部字段：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `name` | **必填** | 字母、数字和 `._-`，全局唯一。以后 `cs submit <这个名字>` 用它 |
+| `repo_path` | `{root}/repos/<name>.git` | 留空就用它；**不存在时自动 `git init --bare` 建一个空仓库** |
+| `target_branch` | `main` | 仓库已有提交时，这条分支必须存在 |
+
+注册时会当场校验，不合格返回 400 并说明原因：路径不存在、路径不是 git 仓库、
+`target_branch` 在仓库里找不到（这时会把实际存在的分支列出来）。
 
 > **`cs` 没有注册项目的子命令。** 项目只在页面或接口里注册一次，之后都用 `cs`。
 
-### 6. 提交第一个任务
+### 6. 从零新建一个项目
+
+服务器连不上 GitHub，所以本地建好再推过去：
+
+```bash
+# 本地
+mkdir myapp && cd myapp
+git init -b main
+echo "# myapp" > README.md && git add -A && git commit -m init
+
+# 注册 —— 空仓库会自动建好
+curl -X POST http://127.0.0.1:8788/api/projects \
+  -H 'content-type: application/json' -d '{"name":"myapp"}'
+
+# 把本地接到服务器上，推第一次
+git remote add server tencent:codingstorm/repos/myapp.git
+git push -u server main
+```
+
+推完就能用了。以后 AI 合并的改动用 `git pull server main` 拿回来。
+
+> **一定要先 push 再提交任务。** 空仓库没有分支，任务会在切工作区时失败
+> （报「仓库里没有 main 分支 —— 空仓库要先从本地 push 一次」）。
+
+### 7. 提交第一个任务
 
 ```bash
 cs submit demo "给 stats.py 加一个 mode(numbers) 函数" --kind requirement
@@ -219,7 +256,7 @@ contexts/<项目>/    pointer.md / journal.md / docs/（含 INDEX.md）
 worktrees/<项目>/   每个任务一个临时工作区，批准或丢弃后清掉
 logs/<项目>/<任务id>.ndjson   原始事件流（排错时看这个）
 logs/<项目>/<任务id>.stderr   子进程 stderr
-repos/              代码不读写的目录 —— 被调度的仓库放这里最省事，但放哪都行
+repos/              被调度的仓库。注册时留空 repo_path 就用这里，不存在会自动新建
 ```
 
 运行时还需要的文件在 `{root}` 旁边（不进版本库）：`prices.toml`、`codingstorm.toml`。

@@ -235,7 +235,7 @@ class Store:
     async def list_attempts(self, task_id: str) -> list[AttemptOut]:
         rows = await self.db.query(
             "SELECT attempt_no, session_id, model, exit_code, result_subtype, is_error,"
-            " num_turns, input_tokens, output_tokens, cache_read_tokens,"
+            " error_text, num_turns, input_tokens, output_tokens, cache_read_tokens,"
             " cache_creation_tokens, cost_usd, price_version, origin, started_at, finished_at"
             " FROM attempts WHERE task_id = ? ORDER BY attempt_no",
             (task_id,),

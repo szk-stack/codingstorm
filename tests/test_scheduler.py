@@ -1,6 +1,7 @@
 """调度器测试。用假 runner，不真跑 Claude Code。"""
 
 import asyncio
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -112,6 +113,31 @@ def test_exception_in_runner_marks_failed(env):
         task = (await store.list_tasks())[0]
         assert task.status == TaskStatus.FAILED
         assert "炸了" in (task.error_text or "")
+
+    run(main())
+
+
+def test_empty_repo_fails_with_reason_on_attempt(env, tmp_path: Path):
+    """仓库还空着就提交任务：原因要能看懂，而且落在 attempt 上（任务级说明只有一行）。"""
+    _, store, _, sched, _ = env
+    empty = tmp_path / "empty.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(empty)], check=True)
+
+    async def main():
+        p = await store.create_project(
+            ProjectCreate(name="empty", repo_path=str(empty), target_branch="main")
+        )
+        await store.create_task(p.id, TaskCreate(title="A"))
+        await sched._tick()
+        await _drain(sched)
+
+        task = (await store.list_tasks())[0]
+        assert task.status == TaskStatus.FAILED
+        assert "要先从本地 push" in (task.error_text or "")
+
+        attempt = (await store.list_attempts(task.id))[0]
+        assert attempt.is_error is True
+        assert "要先从本地 push" in (attempt.error_text or "")
 
     run(main())
 

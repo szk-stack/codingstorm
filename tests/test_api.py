@@ -1,5 +1,6 @@
 """HTTP 接口测试。不启动调度器，只验证路由与校验。"""
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -19,8 +20,11 @@ def client(tmp_path: Path):
         yield c
 
 
-def _mk_project(client: TestClient, name: str = "demo", repo: str = "/tmp/demo") -> dict:
-    r = client.post("/api/projects", json={"name": name, "repo_path": repo})
+def _mk_project(client: TestClient, name: str = "demo", repo: str | None = None) -> dict:
+    body: dict = {"name": name}
+    if repo is not None:
+        body["repo_path"] = repo
+    r = client.post("/api/projects", json=body)
     assert r.status_code == 201, r.text
     return r.json()
 
@@ -43,14 +47,63 @@ def test_create_and_get_project(client: TestClient):
     assert [x["name"] for x in listed] == ["demo"]
 
 
+def test_repo_path_defaults_to_root_repos(client: TestClient):
+    """不填仓库路径时，在 {root}/repos/<name>.git 建一个空裸仓库。"""
+    p = _mk_project(client, "myapp")
+    expected = client.app.state.config.repos_dir / "myapp.git"  # type: ignore[attr-defined]
+    assert p["repo_path"] == str(expected)
+    assert expected.is_dir()
+    assert (expected / "HEAD").exists()
+
+
+def test_new_repo_head_points_at_target_branch(client: TestClient):
+    """新建的裸仓库 HEAD 指向 target_branch，用户直接 clone 就落在主干上。"""
+    _mk_project(client, "myapp", repo="")
+    head = (client.app.state.config.repos_dir / "myapp.git" / "HEAD").read_text()  # type: ignore[attr-defined]
+    assert head.strip() == "ref: refs/heads/main"
+
+
+def test_explicit_repo_path_must_exist(client: TestClient):
+    r = client.post("/api/projects", json={"name": "x", "repo_path": "/nope/nowhere.git"})
+    assert r.status_code == 400
+    assert "不存在" in r.json()["detail"]
+
+
+def test_explicit_repo_path_must_be_a_repo(client: TestClient, tmp_path: Path):
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    r = client.post("/api/projects", json={"name": "x", "repo_path": str(plain)})
+    assert r.status_code == 400
+    assert "不是 git 仓库" in r.json()["detail"]
+
+
+def test_missing_target_branch_rejected(client: TestClient, make_repo):
+    """分支填错要当场报错，并把实际存在的分支列出来。"""
+    repo = make_repo("r")
+    r = client.post(
+        "/api/projects",
+        json={"name": "x", "repo_path": str(repo), "target_branch": "trunk"},
+    )
+    assert r.status_code == 400
+    assert "main" in r.json()["detail"]
+
+
+def test_empty_repo_allowed(client: TestClient, tmp_path: Path):
+    """空仓库放行 —— 显然是先注册、再从本地 push。"""
+    empty = tmp_path / "empty.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(empty)], check=True)
+    r = client.post("/api/projects", json={"name": "x", "repo_path": str(empty)})
+    assert r.status_code == 201, r.text
+
+
 def test_duplicate_project_name_rejected(client: TestClient):
     _mk_project(client, "demo")
-    r = client.post("/api/projects", json={"name": "demo", "repo_path": "/tmp/other"})
+    r = client.post("/api/projects", json={"name": "demo"})
     assert r.status_code == 409
 
 
 def test_project_name_pattern_enforced(client: TestClient):
-    r = client.post("/api/projects", json={"name": "有 空格", "repo_path": "/tmp/x"})
+    r = client.post("/api/projects", json={"name": "有 空格"})
     assert r.status_code == 422
 
 

@@ -53,10 +53,55 @@ class RebaseConflict(RuntimeError):
     pass
 
 
+class RepoError(RuntimeError):
+    """仓库不能用。注册项目时校验，或任务开始时才发现 —— 消息直接给用户看。"""
+
+
 def slugify(text: str, max_len: int = 32) -> str:
     """把任务标题压成能进分支名的片段。非 ASCII 会被丢掉，所以中文标题常常为空。"""
     ascii_part = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
     return ascii_part[:max_len].strip("-")
+
+
+async def prepare_repo(
+    config: Config, *, name: str, repo_path: str, target_branch: str
+) -> Path:
+    """注册项目时确定仓库路径，并挡住一眼能看出来的错误。
+
+    - 没给路径：用 `{root}/repos/<name>.git`，不存在就顺手建一个空裸仓库
+    - 给了路径：必须存在，且必须是个 git 仓库
+    - 目标分支：仓库已有提交时必须存在；空仓库放行（显然是还没 push）
+    """
+    explicit = bool(repo_path.strip())
+    path = Path(repo_path).expanduser() if explicit else config.repos_dir / f"{name}.git"
+    # 后面的判定要拿它跟 git 的输出比，必须先归一化
+    path = path.resolve()
+
+    if not path.exists():
+        if explicit:
+            raise RepoError(f"仓库路径不存在：{path}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 用 path.name，因为 cwd 已经是父目录了
+        await Git(path.parent).run("init", "--bare", "-b", target_branch, path.name)
+        log.info("已创建空裸仓库 %s，等第一次 push", path)
+        return path
+
+    repo = Git(path)
+    raw = (await repo.run("rev-parse", "--git-dir", check=False)).strip()
+    git_dir = Path(raw) if raw else None
+    if git_dir is not None and not git_dir.is_absolute():
+        git_dir = path / git_dir
+    # `.`（裸仓库）或 `.git`（普通仓库）都算「就在这个路径上」。指向别处说明 git 是
+    # 往上找到了某个上级仓库 —— 那不是我们要的（实测：主目录是仓库时，随便一个
+    # 普通目录都能通过检查）。
+    if git_dir is None or not (git_dir == path or git_dir.parent == path):
+        raise RepoError(f"不是 git 仓库：{path}")
+
+    branches = await repo.branches()
+    if branches and target_branch not in branches:
+        raise RepoError(f"仓库里没有 {target_branch} 分支，现有分支：{'、'.join(branches)}")
+    return path
+
 
 class WorkspaceManager:
     # 提交前要挡掉的构建产物。写进仓库的 info/exclude（**未跟踪的本地文件**，
@@ -183,6 +228,11 @@ class WorkspaceManager:
             await repo.worktree_prune()
 
         await repo.delete_branch(branch)  # 重试时旧分支要清掉
+
+        # 注册时校验过，但那时仓库可能是空的（还没 push）。到这里才发现的话，
+        # 报清楚原因，别让用户对着一句 ambiguous argument 猜。
+        if not await repo.ref_exists(f"refs/heads/{target_branch}"):
+            raise RepoError(f"仓库里没有 {target_branch} 分支 —— 空仓库要先从本地 push 一次")
 
         base = await repo.head_sha(target_branch)
         await repo.worktree_add(path, branch, base)

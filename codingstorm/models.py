@@ -38,7 +38,8 @@ ACTIONABLE_STATUSES = frozenset({TaskStatus.AWAITING_REVIEW, TaskStatus.FAILED})
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
-    repo_path: str
+    # 留空则用 {root}/repos/<name>.git；不存在就建一个空裸仓库
+    repo_path: str = ""
     target_branch: str = "main"
 
 
@@ -103,6 +104,8 @@ class AttemptOut(BaseModel):
     exit_code: int | None = None
     result_subtype: str | None = None
     is_error: bool | None = None
+    # 没跑起来就失败的那种（比如仓库还是空的），只有它说明原因
+    error_text: str | None = None
     num_turns: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None

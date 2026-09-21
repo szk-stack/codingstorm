@@ -8,7 +8,7 @@ import pytest
 
 from codingstorm.config import Config
 from codingstorm.git_ops import Git
-from codingstorm.workspace import RebaseConflict, WorkspaceManager
+from codingstorm.workspace import RebaseConflict, RepoError, WorkspaceManager
 
 
 def run(coro):
@@ -53,6 +53,19 @@ def _write(path: Path, name: str, content: str) -> None:
 
 
 # ---------- 工作区生命周期 ----------
+
+def test_prepare_reports_missing_target_branch(env, tmp_path):
+    """空仓库（用户还没 push）时，别让任务对着一句 ambiguous argument 猜。"""
+    _, wm, _ = env
+    empty = tmp_path / "empty.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(empty)], check=True)
+
+    with pytest.raises(RepoError, match="要先从本地 push"):
+        run(wm.prepare(
+            project_name="p", repo_path=str(empty), target_branch="main",
+            task_id="t1", title="x",
+        ))
+
 
 def test_worktree_is_isolated_from_main_repo(env):
     """worktree 里改文件不该影响主仓库的工作区。"""

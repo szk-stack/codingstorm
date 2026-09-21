@@ -25,7 +25,7 @@ from codingstorm.models import (
     UsageOut,
 )
 from codingstorm.store import Store
-from codingstorm.workspace import RebaseConflict, Workspace
+from codingstorm.workspace import RebaseConflict, RepoError, Workspace, prepare_repo
 
 router = APIRouter(prefix="/api")
 pages = APIRouter()
@@ -60,6 +60,17 @@ async def create_project(request: Request, spec: ProjectCreate) -> ProjectOut:
     store = _store(request)
     if await store.get_project_by_name(spec.name):
         raise HTTPException(409, f"项目名已存在: {spec.name}")
+    try:
+        spec.repo_path = str(
+            await prepare_repo(
+                request.app.state.config,
+                name=spec.name,
+                repo_path=spec.repo_path,
+                target_branch=spec.target_branch,
+            )
+        )
+    except RepoError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return await store.create_project(spec)
 
 

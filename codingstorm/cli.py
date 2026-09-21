@@ -146,9 +146,13 @@ def cmd_show(args) -> int:
     attempts = call(args.base, "GET", f"/api/tasks/{t['id']}/attempts") or []
     for a in attempts:
         label = "记录沉淀" if a["origin"] == "sediment" else "执行任务"
-        if a.get("input_tokens") is None:
+        if a.get("finished_at") is None:
             # 沉淀是在任务转入待审之后才跑的，这时候可能还没结束
             print(f"  {label}  （进行中）")
+            continue
+        if a.get("input_tokens") is None:
+            # 没跑起来就失败了（比如仓库还是空的），没有用量可报
+            print(f"  {label}  未执行：{a.get('error_text') or '没有产生用量'}")
             continue
         cost = f"  ${a['cost_usd']:.4f}" if a.get("cost_usd") is not None else ""
         print(f"  {label}  in={a['input_tokens']}  out={a['output_tokens']}{cost}")

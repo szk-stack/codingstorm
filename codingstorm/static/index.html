@@ -38,6 +38,7 @@
         <button class="ctab active" data-ctab="pointer">指针图</button>
         <button class="ctab" data-ctab="journal">变更记录</button>
         <button class="ctab" data-ctab="docs">文档</button>
+        <button class="ctab" data-ctab="files">文件</button>
       </div>
 
       <div id="ctx-pointer">
@@ -72,16 +73,34 @@
           </div>
         </div>
       </div>
+
+      <div id="ctx-files" hidden>
+        <div class="tabs small">
+          <button class="rtab active" data-ref="">主干</button>
+          <button class="rtab" data-ref="task">本次任务</button>
+        </div>
+        <div id="file-crumbs" class="crumbs"></div>
+        <div id="file-tree" class="tree"></div>
+      </div>
     </section>
   </aside>
 
   <section class="content">
-    <div class="panel">
+    <div class="panel" id="queue-panel">
       <div class="panel-head">
         <h2 id="queue-title">任务队列</h2>
         <span id="queue-count" class="muted"></span>
       </div>
       <ul id="tasks" class="list tasks"></ul>
+    </div>
+
+    <div class="panel" id="file-panel" hidden>
+      <div class="panel-head">
+        <h2 id="file-title">文件</h2>
+        <span id="file-meta" class="muted"></span>
+        <button id="file-back" class="ghost">返回</button>
+      </div>
+      <pre class="pre code" id="file-body"></pre>
     </div>
 
     <div class="panel" id="detail-panel" hidden>
@@ -94,12 +113,23 @@
       <div class="usage" id="usage"></div>
 
       <div class="tabs">
-        <button class="tab active" data-tab="output">执行过程</button>
+        <button class="tab active" data-tab="chat">对话</button>
+        <button class="tab" data-tab="output">执行过程</button>
         <button class="tab" data-tab="diff">改动</button>
       </div>
 
-      <div class="tabpane" id="pane-output">
-        <div class="progress" id="progress" hidden></div>
+      <div class="tabpane" id="pane-chat">
+        <div class="chat" id="chat"></div>
+        <form class="inline-form" id="chat-form" hidden>
+          <textarea id="chat-input" rows="2" placeholder="接着说 —— 比如：改成返回列表，不要返回单个值"></textarea>
+          <div class="row">
+            <button type="submit">继续</button>
+            <span class="hint" id="chat-hint"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="tabpane" id="pane-output" hidden>        <div class="progress" id="progress" hidden></div>
         <div class="stream" id="stream"></div>
       </div>
 

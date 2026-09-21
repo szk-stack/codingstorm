@@ -228,3 +228,120 @@ def test_scheduler_not_started_in_tests(client: TestClient):
     """start_scheduler=False 时不应有调度循环在跑。"""
     scheduler = client.app.state.scheduler  # type: ignore[attr-defined]
     assert scheduler.running == {}
+
+
+# ---------- 文件浏览 ----------
+
+
+def _commit(repo: Path, message: str = "add files") -> None:
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@l", "-c", "user.name=t",
+         "commit", "-q", "-m", message],
+        check=True,
+    )
+
+
+@pytest.fixture
+def repo_with_files(make_repo) -> Path:
+    repo = make_repo("withfiles")
+    (repo / "src").mkdir()
+    (repo / "src" / "a.py").write_text("print(1)\n", encoding="utf-8")
+    (repo / "src" / "bin.dat").write_bytes(b"\x00\x01\x02")
+    (repo / "src" / "中文.md").write_text("你好\n", encoding="utf-8")
+    _commit(repo)
+    return repo
+
+
+def test_tree_lists_dirs_before_files(client: TestClient, repo_with_files: Path):
+    p = _mk_project(client, "demo", repo=str(repo_with_files))
+    tree = client.get(f"/api/projects/{p['id']}/tree").json()
+    assert tree["ref"] == "main"
+    assert tree["path"] == ""
+    assert [(e["name"], e["type"]) for e in tree["entries"]] == [
+        ("src", "dir"),
+        ("README.md", "file"),
+    ]
+
+
+def test_tree_descends_and_keeps_non_ascii_names(client: TestClient, repo_with_files: Path):
+    """中文文件名不能被 git 转义成八进制 —— quotePath 那个坑。"""
+    p = _mk_project(client, "demo", repo=str(repo_with_files))
+    tree = client.get(f"/api/projects/{p['id']}/tree", params={"path": "src"}).json()
+    assert [e["name"] for e in tree["entries"]] == ["a.py", "bin.dat", "中文.md"]
+    assert tree["entries"][0]["path"] == "src/a.py"
+
+
+def test_file_returns_text(client: TestClient, repo_with_files: Path):
+    p = _mk_project(client, "demo", repo=str(repo_with_files))
+    f = client.get(f"/api/projects/{p['id']}/file", params={"path": "src/a.py"}).json()
+    assert f["text"] == "print(1)\n"
+    assert f["binary"] is False
+    assert f["size"] == 9
+
+
+def test_file_reports_binary_without_content(client: TestClient, repo_with_files: Path):
+    p = _mk_project(client, "demo", repo=str(repo_with_files))
+    f = client.get(f"/api/projects/{p['id']}/file", params={"path": "src/bin.dat"}).json()
+    assert f["binary"] is True
+    assert f["text"] == ""
+
+
+def test_tree_can_read_a_branch(client: TestClient, repo_with_files: Path):
+    """审阅时要能看任务分支的版本。"""
+    subprocess.run(["git", "-C", str(repo_with_files), "branch", "cs/abc"], check=True)
+    p = _mk_project(client, "demo", repo=str(repo_with_files))
+    tree = client.get(f"/api/projects/{p['id']}/tree", params={"ref": "cs/abc"}).json()
+    assert tree["ref"] == "cs/abc"
+    assert [e["name"] for e in tree["entries"]] == ["src", "README.md"]
+
+
+def test_tree_rejects_parent_traversal(client: TestClient, repo_with_files: Path):
+    p = _mk_project(client, "demo", repo=str(repo_with_files))
+    r = client.get(f"/api/projects/{p['id']}/tree", params={"path": "../../etc"})
+    assert r.status_code == 400
+
+
+def test_tree_rejects_option_like_ref(client: TestClient, repo_with_files: Path):
+    """ref 以 - 开头会被 git 当成选项（实测 ls-tree --evil 报 unknown option）。"""
+    p = _mk_project(client, "demo", repo=str(repo_with_files))
+    r = client.get(f"/api/projects/{p['id']}/tree", params={"ref": "--evil"})
+    assert r.status_code == 400
+
+
+def test_tree_unknown_ref_is_404(client: TestClient, repo_with_files: Path):
+    p = _mk_project(client, "demo", repo=str(repo_with_files))
+    r = client.get(f"/api/projects/{p['id']}/tree", params={"ref": "nope"})
+    assert r.status_code == 404
+
+
+def test_file_missing_path_rejected(client: TestClient, repo_with_files: Path):
+    p = _mk_project(client, "demo", repo=str(repo_with_files))
+    assert client.get(f"/api/projects/{p['id']}/file", params={"path": ""}).status_code == 400
+
+
+# ---------- 多轮对话 ----------
+
+
+def test_followup_rejected_while_queued(client: TestClient):
+    """还在排队/执行的任务不能追加 —— 先把这一轮跑完。"""
+    p = _mk_project(client)
+    task = client.post(f"/api/projects/{p['id']}/tasks", json={"title": "x"}).json()
+    r = client.post(f"/api/tasks/{task['id']}/messages", json={"text": "再改改"})
+    assert r.status_code == 409
+
+
+def test_followup_rejects_empty_text(client: TestClient):
+    p = _mk_project(client)
+    task = client.post(f"/api/projects/{p['id']}/tasks", json={"title": "x"}).json()
+    assert client.post(f"/api/tasks/{task['id']}/messages", json={"text": ""}).status_code == 422
+
+
+def test_followup_missing_task_404(client: TestClient):
+    assert client.post("/api/tasks/nope/messages", json={"text": "x"}).status_code == 404
+
+
+def test_messages_start_empty(client: TestClient):
+    p = _mk_project(client)
+    task = client.post(f"/api/projects/{p['id']}/tasks", json={"title": "x"}).json()
+    assert client.get(f"/api/tasks/{task['id']}/messages").json() == []

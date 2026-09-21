@@ -199,9 +199,23 @@ class ContextStore:
             f.write("\n" + entry.strip() + "\n")
 
     def journal_has_task(self, project_name: str, task_id: str) -> bool:
-        """沉淀的幂等标记 —— 重试不能重复追加。"""
+        """这条任务在变更记录里有没有条目。"""
         marker = f"codingstorm-task: {task_id}"
         return marker in self.read_journal(project_name)
+
+    def replace_journal_entry(self, project_name: str, task_id: str, entry: str) -> None:
+        """替换这条任务已有的记录，没有就追加。
+
+        多轮对话里每一轮都会重新沉淀，而记录描述的是**累积**改动 —— 直接追加的话，
+        前几轮写的那条会留下来，而它每一轮都会被注入 prompt，等于给 AI 递过时信息。
+        """
+        marker = f"codingstorm-task: {task_id}"
+        path = self.ensure(project_name).journal
+        text = path.read_text(encoding="utf-8")
+        # 记录之间以 "## " 标题分隔；文件开头那段模板说明自成一块，必须留着
+        blocks = [b for b in re.split(r"(?m)^(?=## )", text) if b.strip()]
+        kept = "".join(b for b in blocks if marker not in b).rstrip("\n")
+        path.write_text(f"{kept}\n\n{entry}", encoding="utf-8")
 
     # ---------- 组装 prompt ----------
 

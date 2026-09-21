@@ -56,6 +56,14 @@ PROBES = {
     "指针图字节提示": "document.querySelector('#ctx-bytes')?.textContent",
     "指针图内容": "document.querySelector('#pointer-text')?.value?.slice(0,200)",
     "变更记录": "document.querySelector('#journal-text')?.textContent?.slice(-300)",
+    "对话轮次": "document.querySelectorAll('#chat .chat-turn').length",
+    "对话内容": "document.querySelector('#chat')?.innerText?.slice(0,600)",
+    "继续输入框可见": "!document.querySelector('#chat-form')?.hidden",
+    "文件树条目": "document.querySelectorAll('#file-tree .tree-row').length",
+    "文件树文本": "document.querySelector('#file-tree')?.innerText?.slice(0,400)",
+    "面包屑": "document.querySelector('#file-crumbs')?.innerText",
+    "文件面板可见": "!document.querySelector('#file-panel')?.hidden",
+    "文件正文": "document.querySelector('#file-body')?.textContent?.slice(0,200)",
     "JS 报错": "window.__errors ? window.__errors.join(' | ') : '(无)'",
 }
 
@@ -72,7 +80,7 @@ def fetch_json(url: str):
         return json.loads(r.read())
 
 
-async def run(url: str, wait_s: float) -> int:
+async def run(url: str, wait_s: float, pre_script: str = "") -> int:
     chrome = find_chrome()
     port = free_port()
     profile = Path(tempfile.mkdtemp(prefix="cs-browser-"))
@@ -143,6 +151,13 @@ async def run(url: str, wait_s: float) -> int:
 
             print(f"URL: {url}")
             print("=" * 70)
+
+            if pre_script:
+                # 探针只能读，读不到「点了之后」的样子 —— 想验交互就先跑一段 JS
+                # （点页签、点文件），再让探针去读结果。
+                await evaluate(pre_script)
+                await asyncio.sleep(1.5)
+
             for label, expr in PROBES.items():
                 value = await evaluate(expr)
                 if isinstance(value, str):
@@ -165,4 +180,5 @@ if __name__ == "__main__":
         raise SystemExit(1)
     target = sys.argv[1]
     wait = float(sys.argv[2]) if len(sys.argv) > 2 else 8.0
-    raise SystemExit(asyncio.run(run(target, wait)))
+    pre = sys.argv[3] if len(sys.argv) > 3 else ""
+    raise SystemExit(asyncio.run(run(target, wait, pre)))

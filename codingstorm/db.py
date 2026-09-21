@@ -91,6 +91,17 @@ CREATE TABLE IF NOT EXISTS task_events (
     payload  TEXT,
     PRIMARY KEY (task_id, seq)
 ) WITHOUT ROWID;
+
+-- 用户追加的消息（第 2 轮起）。第 1 轮存在 tasks 的 title/body 里。
+-- 有这张表的行意味着「这条任务已经开过口」，调度器据此决定是接着上一轮
+-- 会话跑，还是从最新的主干重开。
+CREATE TABLE IF NOT EXISTS task_messages (
+    task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    seq        INTEGER NOT NULL,
+    text       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, seq)
+) WITHOUT ROWID;
 """
 
 _SENTINEL = object()

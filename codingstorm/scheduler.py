@@ -179,13 +179,42 @@ class Scheduler:
         workspace = None
 
         try:
-            workspace = await self.workspaces.prepare(
-                project_name=project.name,
-                repo_path=project.repo_path,
-                target_branch=project.target_branch,
-                task_id=task_id,
-                title=task.title,
-            )
+            messages = await self.store.list_messages(task_id)
+            last_session = await self.store.last_session_id(task_id) if messages else None
+
+            # 追加过消息、且上一轮留下了会话和工作区 → 接着聊。
+            # 少任何一样就是从头跑：比如第一轮在切工作区时就失败了（仓库还是空的），
+            # branch 为空，这次带上追加说明重开。
+            resume = bool(messages and last_session and task.branch)
+            if resume:
+                workspace = await self.workspaces.prepare_resume(
+                    project_name=project.name,
+                    repo_path=project.repo_path,
+                    target_branch=project.target_branch,
+                    task_id=task_id,
+                    branch=task.branch,
+                    base_commit=task.base_commit or "",
+                )
+                # 只发新这一句 —— 上下文都在会话里，重复注入一遍是浪费
+                prompt = messages[-1].text
+                session_id = last_session
+            else:
+                workspace = await self.workspaces.prepare(
+                    project_name=project.name,
+                    repo_path=project.repo_path,
+                    target_branch=project.target_branch,
+                    task_id=task_id,
+                    title=task.title,
+                )
+                prompt = self.contexts.build_prompt(
+                    project.name,
+                    task,
+                    max_journal_chars=self.config.context.journal_prompt_chars,
+                )
+                if messages:
+                    prompt += f"\n\n---\n\n## 追加说明\n\n{messages[-1].text}"
+                session_id = str(uuid.uuid4())
+
             # 只更新字段，不重写 status —— claim_next 已经置为 running 了，
             # 在这里再写一次会把并发的 interrupted 覆盖回 running。
             await self.store.update_fields(
@@ -202,17 +231,14 @@ class Scheduler:
             outcome = await self.runner.run(
                 task_id,
                 project.name,
-                prompt=self.contexts.build_prompt(
-                    project.name,
-                    task,
-                    max_journal_chars=self.config.context.journal_prompt_chars,
-                ),
-                session_id=str(uuid.uuid4()),
+                prompt=prompt,
+                session_id=session_id,
                 cwd=workspace.path,
                 attempt_no=attempt_no,
                 # 上下文目录在 worktree 之外，靠 --add-dir 授权访问 ——
                 # 这样完全不用碰被调度仓库的 .gitignore，也不污染它的历史
                 context_dir=ctx.root,
+                resume=resume,
             )
         except asyncio.CancelledError:
             await self.store.set_status(task_id, TaskStatus.INTERRUPTED, error_text="任务被取消")

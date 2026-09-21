@@ -165,12 +165,12 @@ async def sediment_task(
     stat: str,
     session_id: str,
 ) -> SedimentResult:
-    """生成并追加一条变更记录。**幂等**：同一任务只追加一次。"""
-    if not config.context.sediment:
-        return SedimentResult(text=None, skipped=True)
+    """生成并追加一条变更记录。
 
-    if contexts.journal_has_task(project_name, task.id):
-        log.info("任务 %s 已有变更记录，跳过沉淀", task.id)
+    同一条任务**替换**而不是追加：多轮对话里每轮都会重新沉淀，而记录描述的是
+    累积改动，留着前几轮的旧描述等于给后续任务递过时信息。
+    """
+    if not config.context.sediment:
         return SedimentResult(text=None, skipped=True)
 
     prompt = build_prompt(
@@ -188,6 +188,7 @@ async def sediment_task(
         return result
 
     entry = result.text.strip() + f"\n\n<!-- codingstorm-task: {task.id} -->\n"
-    contexts.append_journal(project_name, entry)
-    log.info("任务 %s 的变更记录已写入 journal", task.id)
+    had = contexts.journal_has_task(project_name, task.id)
+    contexts.replace_journal_entry(project_name, task.id, entry)
+    log.info("任务 %s 的变更记录已%s journal", task.id, "更新到" if had else "写入")
     return result

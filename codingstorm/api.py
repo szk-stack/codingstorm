@@ -11,17 +11,23 @@ from fastapi.responses import FileResponse
 
 from codingstorm.context import POINTER_SOFT_LIMIT_BYTES
 from codingstorm.diff_render import render_diff
+from codingstorm.git_ops import Git, GitError
 from codingstorm.models import (
     AttemptOut,
     ContextOut,
     DocOut,
+    FileEntry,
+    FileOut,
     ModelUsage,
     ProjectCreate,
     ProjectOut,
     TaskCreate,
+    TaskMessageIn,
+    TaskMessageOut,
     TaskOut,
     TaskStatus,
     TextPayload,
+    TreeOut,
     UsageOut,
 )
 from codingstorm.store import Store
@@ -142,6 +148,35 @@ async def requeue_task(request: Request, task_id: str) -> TaskOut:
         raise HTTPException(404, "任务不存在")
     if task.status not in (TaskStatus.FAILED, TaskStatus.INTERRUPTED, TaskStatus.CANCELLED):
         raise HTTPException(409, f"任务状态为 {task.status}，不能重新入队")
+    await store.requeue(task_id)
+    refreshed = await store.get_task(task_id)
+    assert refreshed is not None
+    return refreshed
+
+
+@router.get("/tasks/{task_id}/messages", response_model=list[TaskMessageOut])
+async def list_task_messages(request: Request, task_id: str) -> list[TaskMessageOut]:
+    store = _store(request)
+    if await store.get_task(task_id) is None:
+        raise HTTPException(404, "任务不存在")
+    return await store.list_messages(task_id)
+
+
+@router.post("/tasks/{task_id}/messages", response_model=TaskOut)
+async def add_task_message(request: Request, task_id: str, spec: TaskMessageIn) -> TaskOut:
+    """追加一轮，任务回到队列 —— 调度器会带着同一个会话接着跑。
+
+    允许的状态只有待审阅和失败：已合并/已丢弃的任务工作区和分支都清掉了，
+    接着聊没有意义（那时候该开新任务）。
+    """
+    store = _store(request)
+    task = await store.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, "任务不存在")
+    if task.status not in (TaskStatus.AWAITING_REVIEW, TaskStatus.FAILED):
+        raise HTTPException(409, f"任务状态为 {task.status}，只有待审阅或失败的任务能继续")
+
+    await store.add_message(task_id, spec.text)
     await store.requeue(task_id)
     refreshed = await store.get_task(task_id)
     assert refreshed is not None
@@ -299,6 +334,86 @@ async def get_usage(request: Request, project_id: str | None = None) -> UsageOut
         price_version=prices.version,
         prices_configured=prices.configured,
         note=note,
+    )
+
+
+# ---------- 文件浏览 ----------
+
+# 单次返回的文件大小上限。超过就截断 —— 前端也渲染不动。
+MAX_FILE_BYTES = 512 * 1024
+
+
+def _clean_path(raw: str) -> str:
+    """把 HTTP 传来的路径归一化，挡住越界。
+
+    git 自己也会拒绝 `..`（实测 `cat-file blob main:../../etc/passwd` 直接 fatal），
+    这里再拦一道是省得让它跑到 git 那层。
+    """
+    parts = [p for p in raw.strip().strip("/").split("/") if p not in ("", ".")]
+    if any(p == ".." for p in parts):
+        raise HTTPException(400, "路径不能包含 ..")
+    return "/".join(parts)
+
+
+@router.get("/projects/{project_id}/tree", response_model=TreeOut)
+async def get_project_tree(
+    request: Request, project_id: str, path: str = "", ref: str | None = None
+) -> TreeOut:
+    """列出某个版本下某个目录的内容。ref 缺省是主干。
+
+    用 ls-tree 而不是读工作区 —— 项目仓库是裸的，根本没有工作区可读。
+    """
+    project = await _require_project(request, project_id)
+    ref = ref or project.target_branch
+    rel = _clean_path(path)
+    try:
+        entries = await Git(Path(project.repo_path)).ls_tree(ref, rel)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except GitError as exc:
+        raise HTTPException(404, f"读不到 {ref}:{rel or '.'}") from exc
+
+    # 目录在前、文件在后，各自按名字排 —— 跟普通文件管理器一致
+    ordered = sorted(entries, key=lambda e: (e.type != "tree", e.name.lower()))
+    return TreeOut(
+        ref=ref,
+        path=rel,
+        entries=[
+            FileEntry(
+                name=e.name,
+                path=f"{rel}/{e.name}" if rel else e.name,
+                type="dir" if e.type == "tree" else "file",
+                size=e.size,
+            )
+            for e in ordered
+        ],
+    )
+
+
+@router.get("/projects/{project_id}/file", response_model=FileOut)
+async def get_project_file(
+    request: Request, project_id: str, path: str, ref: str | None = None
+) -> FileOut:
+    project = await _require_project(request, project_id)
+    ref = ref or project.target_branch
+    rel = _clean_path(path)
+    if not rel:
+        raise HTTPException(400, "要指定文件路径")
+    try:
+        data, binary = await Git(Path(project.repo_path)).blob(ref, rel)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except GitError as exc:
+        raise HTTPException(404, f"读不到 {ref}:{rel}") from exc
+
+    return FileOut(
+        ref=ref,
+        path=rel,
+        size=len(data),
+        binary=binary,
+        truncated=len(data) > MAX_FILE_BYTES,
+        # 二进制不往回传内容，传了也没法看
+        text="" if binary else data[:MAX_FILE_BYTES].decode("utf-8", "replace"),
     )
 
 

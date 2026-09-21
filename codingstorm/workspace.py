@@ -250,6 +250,41 @@ class WorkspaceManager:
             log.warning("新工作区里有残留状态（异常）: %s", cleaned)
         return workspace
 
+    async def prepare_resume(
+        self,
+        *,
+        project_name: str,
+        repo_path: str,
+        target_branch: str,
+        task_id: str,
+        branch: str,
+        base_commit: str,
+    ) -> Workspace:
+        """接着上一轮跑：工作区从**已有分支**重建。
+
+        不能走 `_prepare` —— 那个从 target 最新切，会把前几轮的提交丢掉。
+        从分支重建还有个好处：不管上一轮是被 kill 还是留下了半途状态，
+        起点都是确定的。
+        """
+        await self._ensure_exclude(repo_path)
+        async with self.repo_lock(repo_path):
+            repo = Git(Path(repo_path))
+            await repo.worktree_prune()
+            path = self.worktree_path(project_name, task_id)
+            if path.exists():
+                await repo.worktree_remove(path)
+                await asyncio.to_thread(shutil.rmtree, path, ignore_errors=True)
+                await repo.worktree_prune()
+            await repo.worktree_checkout(path, branch)
+            await repo.abort_in_progress(path)
+            return Workspace(
+                path=path,
+                repo_path=Path(repo_path),
+                branch=branch,
+                base_commit=base_commit,
+                target_branch=target_branch,
+            )
+
     # ---------- 收尾 ----------
 
     async def finalize(self, workspace: Workspace, *, message: str) -> FinalizeResult:

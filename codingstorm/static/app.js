@@ -124,11 +124,14 @@ async function createProject(form) {
 
 async function selectProject(id) {
   state.projectId = id;
+  filePath = '';
   renderProjects();
   const project = state.projects.find((p) => p.id === id);
   $('#queue-title').textContent = project ? `${project.name} 的任务` : '任务队列';
   await loadTasks();
   await loadContext();
+  updateRefTabs();
+  if (!$('#ctx-files').hidden) loadFileList();
 }
 
 async function loadTasks() {
@@ -188,25 +191,27 @@ async function submitTask(form) {
 
 /** 路由形如 #/task/<id> 或 #/task/<id>/diff，便于分享链接和刷新后回到原处。 */
 function parseHash() {
-  const m = /^#\/task\/([A-Za-z0-9]+)(?:\/(diff|output))?$/.exec(location.hash || '');
-  return m ? { taskId: m[1], tab: m[2] || 'output' } : null;
+  const m = /^#\/task\/([A-Za-z0-9]+)(?:\/(chat|diff|output))?$/.exec(location.hash || '');
+  return m ? { taskId: m[1], tab: m[2] || 'chat' } : null;
 }
 
 function writeHash(taskId, tab) {
-  const next = `#/task/${taskId}${tab && tab !== 'output' ? '/' + tab : ''}`;
+  const next = `#/task/${taskId}${tab && tab !== 'chat' ? '/' + tab : ''}`;
   if (location.hash !== next) history.replaceState(null, '', next);
 }
 
 function switchTab(which) {
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === which));
+  $('#pane-chat').hidden = which !== 'chat';
   $('#pane-output').hidden = which !== 'output';
   $('#pane-diff').hidden = which !== 'diff';
   if (which === 'diff' && state.task) loadDiff();
+  if (which === 'chat' && state.task) loadChat();
 }
 
 // ---------------- 任务详情 ----------------
 
-async function openTask(id, tab = 'output') {
+async function openTask(id, tab = 'chat') {
   if (state.ws) { state.ws.close(); state.ws = null; }
   state.seen.clear();
   state.expanded.clear();
@@ -232,6 +237,9 @@ async function openTask(id, tab = 'output') {
   await loadTasks();
   await loadContext();
   await loadUsage(id);
+  updateRefTabs();
+  // 文件树还开着的话跟着任务刷新 —— 切到「本次任务」时看的就是这条任务的产出
+  if (!$('#ctx-files').hidden) loadFileList();
   switchTab(tab);
   writeHash(id, tab);
   connectWs(id);
@@ -497,6 +505,200 @@ async function createDoc(form) {
   }
 }
 
+// ---------------- 文件浏览 ----------------
+
+let filePath = '';      // 当前所在目录，空串表示仓库根
+let fileRefMode = '';   // '' = 主干，'task' = 本次任务
+
+function currentFileRef() {
+  if (fileRefMode === 'task') {
+    const t = state.task;
+    if (!t) return '';
+    // 用提交 sha 而不是分支名：批准之后分支就删掉了，sha 一直都在
+    return t.commit_sha || t.branch || '';
+  }
+  const p = state.projects.find((x) => x.id === state.projectId);
+  return p ? p.target_branch : '';
+}
+
+function updateRefTabs() {
+  if (fileRefMode === 'task' && !state.task) fileRefMode = '';
+  document.querySelectorAll('.rtab').forEach((b) => {
+    b.disabled = b.dataset.ref === 'task' && !state.task;
+    b.classList.toggle('active', (b.dataset.ref || '') === fileRefMode);
+  });
+}
+
+async function loadFileList() {
+  const box = $('#file-tree');
+  const crumbs = $('#file-crumbs');
+  box.replaceChildren();
+  crumbs.replaceChildren();
+  updateRefTabs();
+
+  if (!state.projectId) {
+    box.append(el('div', { class: 'tree-empty', text: '先选一个项目' }));
+    return;
+  }
+  const ref = currentFileRef();
+  if (!ref) {
+    box.append(el('div', { class: 'tree-empty', text: '这条任务还没产出提交，只有主干可看' }));
+    return;
+  }
+
+  let data;
+  try {
+    data = await api(`/api/projects/${state.projectId}/tree`
+      + `?path=${encodeURIComponent(filePath)}&ref=${encodeURIComponent(ref)}`);
+  } catch (err) {
+    box.append(el('div', { class: 'tree-empty', text: `读不到：${err.message}` }));
+    return;
+  }
+
+  crumbs.append(...crumbNodes(data.path));
+  if (!data.entries.length) {
+    box.append(el('div', { class: 'tree-empty', text: '（空目录）' }));
+    return;
+  }
+  for (const e of data.entries) {
+    const isDir = e.type === 'dir';
+    box.append(el('div', {
+      class: `tree-row ${isDir ? 'dir' : 'file'}`,
+      onclick: () => (isDir ? enterDir(e.path) : openFile(e.path)),
+    },
+      // 目录名后面加个斜杠 —— 比图标省事，窄侧栏里也看得清
+      el('span', { text: isDir ? `${e.name}/` : e.name }),
+      !isDir && e.size !== null ? el('span', { class: 'sz', text: `${e.size} B` }) : null,
+    ));
+  }
+}
+
+function crumbNodes(path) {
+  const nodes = [el('button', { onclick: () => enterDir('') }, '项目根')];
+  if (!path) return nodes;
+  const parts = path.split('/');
+  let acc = '';
+  parts.forEach((part, i) => {
+    acc = acc ? `${acc}/${part}` : part;
+    const target = acc;
+    nodes.push(el('span', { text: ' / ' }));
+    nodes.push(i === parts.length - 1
+      ? el('span', { text: part })
+      : el('button', { onclick: () => enterDir(target) }, part));
+  });
+  return nodes;
+}
+
+function enterDir(path) {
+  filePath = path;
+  loadFileList();
+}
+
+async function openFile(path) {
+  const ref = currentFileRef();
+  if (!ref) return;
+  try {
+    const f = await api(`/api/projects/${state.projectId}/file`
+      + `?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(ref)}`);
+    $('#file-title').textContent = path;
+    $('#file-meta').textContent = f.binary
+      ? `${f.size} B · 二进制`
+      : `${f.size} B${f.truncated ? ' · 已截断' : ''}`;
+    // 一律 textContent —— 仓库内容不能当 HTML 解析
+    $('#file-body').textContent = f.binary ? '（二进制文件，不显示内容）' : f.text;
+    $('#queue-panel').hidden = true;
+    $('#detail-panel').hidden = true;
+    $('#file-panel').hidden = false;
+  } catch (err) {
+    toast(`打开失败：${err.message}`, true);
+  }
+}
+
+function closeFile() {
+  $('#file-panel').hidden = true;
+  $('#queue-panel').hidden = false;
+  if (state.task) $('#detail-panel').hidden = false;
+}
+
+// ---------------- 对话 ----------------
+
+const FOLLOWABLE = ['awaiting_review', 'failed'];
+
+async function loadChat() {
+  const t = state.task;
+  if (!t) return;
+  let messages = [];
+  let events = [];
+  try {
+    [messages, events] = await Promise.all([
+      api(`/api/tasks/${t.id}/messages`),
+      api(`/api/tasks/${t.id}/events`),
+    ]);
+  } catch (err) {
+    toast(`加载对话失败：${err.message}`, true);
+    return;
+  }
+  renderChat(t, messages, events);
+}
+
+function renderChat(t, messages, events) {
+  const box = $('#chat');
+  box.replaceChildren();
+
+  // 每一轮跑完都会落一条 result 事件，按序对应第 1..N 轮。
+  // 失败的那轮也有（subtype 不是 success），所以序号对得上。
+  const replies = events.filter((e) => e.type === 'result').map((e) => e.payload || {});
+
+  const turns = [{ text: t.body ? `${t.title}\n\n${t.body}` : t.title }];
+  for (const m of messages) turns.push({ text: m.text });
+
+  turns.forEach((turn, i) => {
+    box.append(el('div', { class: 'chat-turn user' },
+      el('div', { class: 'chat-role', text: `第 ${i + 1} 轮 · 你` }),
+      el('div', { class: 'chat-text', text: turn.text })));
+
+    const r = replies[i];
+    if (!r) return;
+    const failed = r.is_error || (r.subtype && r.subtype !== 'success');
+    const text = r.result
+      || (failed ? `（这一轮没跑成：${r.subtype || '执行失败'}）` : '（没有文字输出）');
+    box.append(el('div', { class: `chat-turn ai${failed ? ' failed' : ''}` },
+      el('div', { class: 'chat-role', text: 'AI' }),
+      el('div', { class: 'chat-text', text })));
+  });
+
+  renderChatForm(t);
+}
+
+function renderChatForm(t) {
+  const form = $('#chat-form');
+  const hint = $('#chat-hint');
+  const canFollow = FOLLOWABLE.includes(t.status);
+  form.hidden = !canFollow;
+  if (!hint || !canFollow) return;
+  hint.textContent = t.status === 'awaiting_review'
+    ? 'AI 会带着前面几轮的上下文接着做，改动累积在同一条分支上'
+    : '带上失败原因让它再试一次';
+}
+
+async function sendFollowup(form) {
+  const input = $('#chat-input');
+  const text = input.value.trim();
+  if (!text) { toast('先说点什么', true); return; }
+  try {
+    await api(`/api/tasks/${state.task.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    });
+    input.value = '';
+    toast('已入队 —— 接着上面那轮继续跑');
+    await openTask(state.task.id, 'chat');
+    await loadTasks();
+  } catch (err) {
+    toast(`继续失败：${err.message}`, true);
+  }
+}
+
 // ---------------- WebSocket ----------------
 
 function connectWs(taskId) {
@@ -525,6 +727,9 @@ function connectWs(taskId) {
       renderDetail();
       renderTasks();
       if (prev !== msg.task.status) {
+        // 状态变了，对话里要么多出 AI 这一轮的回复，要么输入框重新可用
+        loadChat();
+        updateRefTabs();
         if (msg.task.status === 'awaiting_review') { loadDiff(); loadUsage(msg.task.id); }
         if (msg.task.status === 'merged' || msg.task.status === 'discarded') {
           $('#stream').append(el('div', { class: 'ev ev-init', text: `— 任务${STATUS_LABEL[msg.task.status]} —` }));
@@ -673,8 +878,23 @@ function init() {
       $('#ctx-pointer').hidden = which !== 'pointer';
       $('#ctx-journal').hidden = which !== 'journal';
       $('#ctx-docs').hidden = which !== 'docs';
+      $('#ctx-files').hidden = which !== 'files';
+      if (which === 'files') loadFileList();
     });
   });
+
+  // ---- 文件浏览 ----
+  document.querySelectorAll('.rtab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      fileRefMode = btn.dataset.ref || '';
+      updateRefTabs();
+      enterDir('');
+    });
+  });
+  $('#file-back').addEventListener('click', closeFile);
+
+  // ---- 对话 ----
+  $('#chat-form').addEventListener('submit', (e) => { e.preventDefault(); sendFollowup(e.target); });
   $('#pointer-save').addEventListener('click', savePointer);
   $('#doc-form').addEventListener('submit', (e) => { e.preventDefault(); createDoc(e.target); });
   $('#doc-save').addEventListener('click', saveDoc);

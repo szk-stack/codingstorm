@@ -50,6 +50,18 @@ class TaskCreate(BaseModel):
     priority: int = 0
 
 
+class TaskMessageIn(BaseModel):
+    """追加一轮对话。"""
+
+    text: str = Field(min_length=1, max_length=10_000)
+
+
+class TaskMessageOut(BaseModel):
+    seq: int
+    text: str
+    created_at: str
+
+
 class TextPayload(BaseModel):
     text: str
 
@@ -57,6 +69,28 @@ class TextPayload(BaseModel):
 class DocOut(BaseModel):
     path: str
     size: int
+
+
+class FileEntry(BaseModel):
+    name: str
+    path: str  # 相对仓库根
+    type: str  # "dir" / "file"
+    size: int | None = None
+
+
+class TreeOut(BaseModel):
+    ref: str
+    path: str
+    entries: list[FileEntry]
+
+
+class FileOut(BaseModel):
+    ref: str
+    path: str
+    size: int
+    binary: bool
+    truncated: bool = False
+    text: str = ""
 
 
 class ContextOut(BaseModel):

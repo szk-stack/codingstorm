@@ -13,6 +13,7 @@ from codingstorm.models import (
     ProjectCreate,
     ProjectOut,
     TaskCreate,
+    TaskMessageOut,
     TaskOut,
     TaskStatus,
 )
@@ -173,12 +174,51 @@ class Store:
         await self.db.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", params)
 
     async def requeue(self, task_id: str) -> None:
-        """把失败/中断的任务放回队列。重试时会重建 worktree 与分支。"""
+        """把失败/中断/追加过消息的任务放回队列。
+
+        是重建工作区还是接着上一轮跑，由调度器按「有没有追加消息」决定 ——
+        存储层只负责把它放回队列。
+        """
         await self.db.execute(
             "UPDATE tasks SET status = ?, started_at = NULL, finished_at = NULL,"
             " error_text = NULL WHERE id = ?",
             (str(TaskStatus.QUEUED), task_id),
         )
+
+    # ---------- 追加消息（多轮对话） ----------
+
+    async def add_message(self, task_id: str, text: str) -> int:
+        """追加一轮用户输入，返回序号。序号在同一条语句里算，不会撞号。"""
+        row = await self.db.execute_returning(
+            "INSERT INTO task_messages (task_id, seq, text, created_at)"
+            " VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM task_messages WHERE task_id = ?), ?, ?)"
+            " RETURNING seq",
+            (task_id, task_id, text, utcnow()),
+        )
+        assert row is not None
+        return row["seq"]
+
+    async def list_messages(self, task_id: str) -> list[TaskMessageOut]:
+        rows = await self.db.query(
+            "SELECT seq, text, created_at FROM task_messages WHERE task_id = ? ORDER BY seq",
+            (task_id,),
+        )
+        return [TaskMessageOut(**{k: r[k] for k in r.keys()}) for r in rows]
+
+    async def last_session_id(self, task_id: str) -> str | None:
+        """最近一次任务执行跑出来的会话 id —— 接着聊就是接在它后面。
+
+        **必须排掉沉淀**：沉淀是另一次独立调用、另一个会话，而且它的 prompt 里
+        有任务标题和 diff。接错会话的话，多轮对话看起来还能答上来（因为沉淀那次
+        也见过任务内容），实际上完全没接在任务历史上 —— 实测踩过。
+        """
+        row = await self.db.query_one(
+            "SELECT session_id FROM attempts"
+            " WHERE task_id = ? AND session_id IS NOT NULL AND origin = 'task'"
+            " ORDER BY attempt_no DESC LIMIT 1",
+            (task_id,),
+        )
+        return row["session_id"] if row else None
 
     async def touch_task(self, task_id: str) -> None:
         await self.db.execute("UPDATE tasks SET last_event_at = ? WHERE id = ?", (utcnow(), task_id))

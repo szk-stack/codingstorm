@@ -24,12 +24,17 @@ class FakeRunner:
 
     def __init__(self, outcome_fn=None):
         self.calls: list[dict] = []
-        self.outcome_fn = outcome_fn or (lambda **_: RunOutcome(saw_result=True, is_error=False))
+        # 默认回显 session_id —— 多轮对话靠它接上，不回显就测不出「继续」
+        self.outcome_fn = outcome_fn or (
+            lambda **kw: RunOutcome(
+                saw_result=True, is_error=False, session_id=kw.get("session_id")
+            )
+        )
         self.killed: list[str] = []
 
     async def run(self, task_id, project_name, **kwargs) -> RunOutcome:
         self.calls.append({"task_id": task_id, "project": project_name, **kwargs})
-        out = self.outcome_fn(task_id=task_id)
+        out = self.outcome_fn(task_id=task_id, session_id=kwargs.get("session_id"))
         if isinstance(out, Exception):
             raise out
         return out
@@ -138,6 +143,80 @@ def test_empty_repo_fails_with_reason_on_attempt(env, tmp_path: Path):
         attempt = (await store.list_attempts(task.id))[0]
         assert attempt.is_error is True
         assert "要先从本地 push" in (attempt.error_text or "")
+
+    run(main())
+
+
+def test_followup_resumes_session_in_same_worktree(env):
+    """追加一轮：接在同一个会话后面，工作区还是那条分支（不是从主干重开）。"""
+    _, store, runner, sched, repo = env
+
+    async def main():
+        await _mk(store, repo)
+        await sched._tick()
+        await _drain(sched)
+        first = runner.calls[0]
+        task = (await store.list_tasks())[0]
+        assert task.status == TaskStatus.AWAITING_REVIEW
+        assert task.branch  # 第一轮已经把分支记下来了
+
+        await store.add_message(task.id, "再改成返回列表，不要返回单个值")
+        await store.requeue(task.id)
+        await sched._tick()
+        await _drain(sched)
+
+        assert len(runner.calls) == 2
+        second = runner.calls[1]
+        assert second["resume"] is True
+        assert second["session_id"] == first["session_id"]
+        # 只发新那一句；上下文都在会话里，不重复注入
+        assert second["prompt"] == "再改成返回列表，不要返回单个值"
+        assert second["cwd"] == first["cwd"]
+
+    run(main())
+
+
+def test_first_turn_failure_with_followup_starts_fresh(env, tmp_path: Path):
+    """第一轮在切工作区时就没跑起来（仓库是空的）：没有会话可接，这次带着
+    追加说明从头跑，而不是硬去 resume 一个不存在的会话。"""
+    _, store, runner, sched, _ = env
+    empty = tmp_path / "empty.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(empty)], check=True)
+
+    def push_initial_commit() -> None:
+        """第一轮失败后用户才推上去 —— 这才是「空仓库」的真实剧本。"""
+        work = tmp_path / "work"
+        subprocess.run(["git", "clone", "-q", str(empty), str(work)], check=True)
+        (work / "a.txt").write_text("x", encoding="utf-8")
+        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(work), "-c", "user.email=t@l", "-c", "user.name=t",
+             "commit", "-q", "-m", "init"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(work), "push", "-q", "origin", "main"], check=True)
+
+    async def main():
+        p = await store.create_project(
+            ProjectCreate(name="empty", repo_path=str(empty), target_branch="main")
+        )
+        task = await store.create_task(p.id, TaskCreate(title="加一个 mode 函数"))
+        await sched._tick()
+        await _drain(sched)
+        assert (await store.get_task(task.id)).status == TaskStatus.FAILED
+        assert runner.calls == []  # 连 runner 都没到
+
+        push_initial_commit()
+        await store.add_message(task.id, "补充一句说明")
+        await store.requeue(task.id)
+        await sched._tick()
+        await _drain(sched)
+
+        second = runner.calls[0]
+        assert second["resume"] is False
+        assert "补充一句说明" in second["prompt"]
+        # 第一轮的上下文注入照旧
+        assert "加一个 mode 函数" in second["prompt"]
 
     run(main())
 

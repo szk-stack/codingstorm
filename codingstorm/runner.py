@@ -142,7 +142,9 @@ class Runner:
 
     # ---------- 命令行 ----------
 
-    def build_command(self, prompt: str, *, session_id: str, context_dir: Path | None) -> list[str]:
+    def build_command(
+        self, prompt: str, *, session_id: str, context_dir: Path | None, resume: bool = False
+    ) -> list[str]:
         cfg = self.config
         cmd = [
             cfg.claude.binary,
@@ -152,8 +154,14 @@ class Runner:
             "stream-json",
             # 不传 --verbose 时 stream-json 会直接报错退出（Phase 0 实测）
             "--verbose",
-            "--session-id",
-            session_id,
+        ]
+        if resume:
+            # 接着上一轮聊。实测 --resume 追加到同一个会话文件、id 不变；
+            # 不用 --continue —— 那个找的是「cwd 里最近的会话」，会串到别人的会话上。
+            cmd += ["--resume", session_id]
+        else:
+            cmd += ["--session-id", session_id]
+        cmd += [
             "--max-turns",
             str(cfg.task.max_turns),
             "--permission-mode",
@@ -181,13 +189,16 @@ class Runner:
         attempt_no: int,
         context_dir: Path | None = None,
         origin: str = "task",
+        resume: bool = False,
     ) -> RunOutcome:
         cfg = self.config
         log_path = cfg.task_log_path(project_name, task_id)
         err_path = cfg.task_stderr_path(project_name, task_id)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        cmd = self.build_command(prompt, session_id=session_id, context_dir=context_dir)
+        cmd = self.build_command(
+            prompt, session_id=session_id, context_dir=context_dir, resume=resume
+        )
         outcome = RunOutcome(session_id=session_id)
 
         # 记下实际用的参数（prompt 太长，略去）——

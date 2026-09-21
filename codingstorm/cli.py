@@ -9,6 +9,7 @@
     cs ls --status awaiting_review
     cs show 6d94534015bc
     cs diff 6d94534015bc
+    cs say 6d94534015bc "改成返回列表，不要返回单个值"
     cs approve 6d94534015bc
 """
 
@@ -198,6 +199,19 @@ def cmd_discard(args) -> int:
     return 0
 
 
+def cmd_say(args) -> int:
+    """接着上一轮说一句。任务回到队列，AI 带着之前的上下文继续。"""
+    t = _resolve_task(args.base, args.task)
+    call(
+        args.base,
+        "POST",
+        f"/api/tasks/{t['id']}/messages",
+        {"text": args.text},
+    )
+    print(f"已入队 {t['id']} —— 接着上面那轮继续跑")
+    return 0
+
+
 def cmd_requeue(args) -> int:
     t = _resolve_task(args.base, args.task)
     call(args.base, "POST", f"/api/tasks/{t['id']}/requeue")
@@ -247,6 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
         s = sub.add_parser(name, help=help_text)
         s.add_argument("task", help="任务 id（支持唯一前缀）")
         s.set_defaults(func=fn)
+
+    s = sub.add_parser("say", help="接着上一轮说一句（多轮对话）")
+    s.add_argument("task", help="任务 id（支持唯一前缀）")
+    s.add_argument("text", help="要说的话")
+    s.set_defaults(func=cmd_say)
 
     sub.add_parser("usage", help="查看用量与成本").set_defaults(func=cmd_usage)
     return p

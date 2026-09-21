@@ -40,13 +40,30 @@ class WorktreeEntry:
     head: str | None
 
 
+@dataclass(frozen=True)
+class TreeEntry:
+    name: str
+    type: str  # "tree" / "blob"
+    size: int | None  # 目录没有大小
+
+
+def check_ref(ref: str) -> None:
+    """ref 来自 HTTP，必须先挡住两类东西。
+
+    - **以 `-` 开头**：会被 git 当成选项（实测 `ls-tree --evil` 报 unknown option）
+    - 含 `:` 或 `^` `~` 等：`<ref>:<path>` 的语法会被拆错
+    """
+    if not ref or ref.startswith("-") or any(c in ref for c in " \t\n:^~?*[\\"):
+        raise ValueError(f"非法的版本引用：{ref!r}")
+
+
 class Git:
     def __init__(self, path: Path):
         self.path = Path(path)
 
     # ---------- 底层 ----------
 
-    async def _exec(self, args: tuple[str, ...], cwd: Path) -> tuple[int, str, str]:
+    async def _exec_raw(self, args: tuple[str, ...], cwd: Path) -> tuple[int, bytes, str]:
         proc = await asyncio.create_subprocess_exec(
             "git",
             *args,
@@ -56,11 +73,11 @@ class Git:
             stderr=asyncio.subprocess.PIPE,
         )
         out, err = await proc.communicate()
-        return (
-            proc.returncode or 0,
-            out.decode("utf-8", "replace"),
-            err.decode("utf-8", "replace"),
-        )
+        return proc.returncode or 0, out, err.decode("utf-8", "replace")
+
+    async def _exec(self, args: tuple[str, ...], cwd: Path) -> tuple[int, str, str]:
+        code, out, err = await self._exec_raw(args, cwd)
+        return code, out.decode("utf-8", "replace"), err
 
     async def run(self, *args: str, cwd: Path | None = None, check: bool = True) -> str:
         code, out, err = await self._exec(args, cwd or self.path)
@@ -96,11 +113,54 @@ class Git:
     async def is_clean(self, cwd: Path | None = None) -> bool:
         return not await self.has_uncommitted_changes(cwd)
 
+    # ---------- 浏览仓库内容（不检出工作区） ----------
+
+    async def ls_tree(self, ref: str, path: str = "") -> list[TreeEntry]:
+        """列出某个版本下某个目录的直接子项。裸仓库也能用 —— 这是能在
+        「项目里有什么」这件事上不落工作区的唯一办法。"""
+        check_ref(ref)
+        spec = f"{ref}:{path}" if path else ref
+        # quotePath=false：否则非 ASCII 文件名会被转义成 \346\226\207 这种八进制
+        out = await self.run("-c", "core.quotePath=false", "ls-tree", "-l", spec)
+        entries: list[TreeEntry] = []
+        for line in out.splitlines():
+            meta, _, name = line.partition("\t")
+            parts = meta.split()
+            if not name or len(parts) < 4:
+                continue
+            entries.append(
+                TreeEntry(
+                    name=name,
+                    type=parts[1],
+                    size=None if parts[3] == "-" else int(parts[3]),
+                )
+            )
+        return entries
+
+    async def blob(self, ref: str, path: str) -> tuple[bytes, bool]:
+        """读一个文件，返回 (内容, 是否二进制)。
+
+        用 cat-file 而不是 show —— show 会给内容加一层格式化。
+        """
+        check_ref(ref)
+        args = ("cat-file", "blob", f"{ref}:{path}")
+        code, out, err = await self._exec_raw(args, self.path)
+        if code != 0:
+            raise GitError(args, code, err, err)
+        # 判据抄 git 自己的：前 8000 字节里有没有 NUL
+        return out, b"\x00" in out[:8000]
+
     # ---------- worktree ----------
 
     async def worktree_add(self, path: Path, branch: str, base: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         await self.run("worktree", "add", "-b", branch, str(path), base)
+
+    async def worktree_checkout(self, path: Path, branch: str) -> None:
+        """把**已有**分支检出到新工作区。和 worktree_add 的区别是它不新建分支 ——
+        多轮对话接着跑时靠它，前几轮的提交都还在那条分支上。"""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        await self.run("worktree", "add", str(path), branch)
 
     async def worktree_remove(self, path: Path, *, force: bool = True) -> None:
         args = ["worktree", "remove"]

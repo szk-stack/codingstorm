@@ -209,3 +209,71 @@ def test_finish_attempt_rejects_unknown_field(store: Store):
             await store.finish_attempt(task.id, 1, not_a_column=1)
 
     run(main())
+
+
+def test_messages_are_ordered_and_numbered(store: Store):
+    async def main():
+        pid = await _mk_project(store, "demo")
+        task = await store.create_task(pid, TaskCreate(title="A"))
+
+        assert await store.add_message(task.id, "第一句") == 1
+        assert await store.add_message(task.id, "第二句") == 2
+
+        msgs = await store.list_messages(task.id)
+        assert [m.seq for m in msgs] == [1, 2]
+        assert [m.text for m in msgs] == ["第一句", "第二句"]
+
+    run(main())
+
+
+def test_messages_are_per_task(store: Store):
+    async def main():
+        pid = await _mk_project(store, "demo")
+        a = await store.create_task(pid, TaskCreate(title="A"))
+        b = await store.create_task(pid, TaskCreate(title="B"))
+        await store.add_message(a.id, "只给 A")
+
+        assert [m.text for m in await store.list_messages(b.id)] == []
+        assert await store.add_message(b.id, "B 的第一句") == 1
+
+    run(main())
+
+
+def test_last_session_id_follows_latest_attempt(store: Store):
+    """接着聊要接在最后跑出来的那个**任务**会话上，不是最早那个。"""
+    async def main():
+        pid = await _mk_project(store, "demo")
+        task = await store.create_task(pid, TaskCreate(title="A"))
+        assert await store.last_session_id(task.id) is None
+
+        await store.start_attempt(task.id, 1)
+        await store.finish_attempt(task.id, 1, session_id="s1")
+        assert await store.last_session_id(task.id) == "s1"
+
+        await store.start_attempt(task.id, 2)
+        await store.finish_attempt(task.id, 2, session_id="s2")
+        assert await store.last_session_id(task.id) == "s2"
+
+    run(main())
+
+
+def test_last_session_id_skips_sediment(store: Store):
+    """沉淀是另一个会话，接错的话多轮对话会「看起来能答但没接上历史」。
+
+    实测踩过：沉淀的 prompt 里带任务标题和 diff，接错会话照样能答对，
+    所以这个 bug 从表面看是发现不了的。
+    """
+    async def main():
+        pid = await _mk_project(store, "demo")
+        task = await store.create_task(pid, TaskCreate(title="A"))
+
+        await store.start_attempt(task.id, 1)
+        await store.finish_attempt(task.id, 1, session_id="task-session")
+
+        # 沉淀排在任务之后，序号更大
+        await store.start_attempt(task.id, 2, origin="sediment")
+        await store.finish_attempt(task.id, 2, session_id="sediment-session")
+
+        assert await store.last_session_id(task.id) == "task-session"
+
+    run(main())

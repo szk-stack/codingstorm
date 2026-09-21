@@ -226,14 +226,20 @@ async def cancel_task(request: Request, task_id: str) -> TaskOut:
 # ---------- 审阅 ----------
 
 
-async def _workspace_for(request: Request, task_id: str):
-    """从任务记录还原出 Workspace（审批发生在任务跑完之后，内存里已经没有它了）。"""
+async def _workspace_for(request: Request, task_id: str, *, required: bool = True):
+    """从任务记录还原出 Workspace（审批发生在任务跑完之后，内存里已经没有它了）。
+
+    `required=False` 时，没有工作区就返回 None 而不是报错 —— 丢弃要用到：
+    早期版本留下过没有工作区记录的任务，那种任务批不了，再不让丢就只能永远挂着。
+    """
     store = _store(request)
     raw = await store.get_task_raw(task_id)
     if raw is None:
         raise HTTPException(404, "任务不存在")
     if not raw["worktree_path"] or not raw["branch"]:
-        raise HTTPException(409, "该任务还没有工作区（可能还没执行过）")
+        if required:
+            raise HTTPException(409, "该任务还没有工作区（可能还没执行过）")
+        return store, raw, None
 
     project = await store.get_project(raw["project_id"])
     if project is None:
@@ -303,16 +309,19 @@ async def approve_task(request: Request, task_id: str) -> TaskOut:
 
 @router.post("/tasks/{task_id}/discard", response_model=TaskOut)
 async def discard_task(request: Request, task_id: str) -> TaskOut:
-    """丢弃：删掉 worktree 和分支，target 不受影响。"""
-    store, _raw, workspace = await _workspace_for(request, task_id)
+    """丢弃：删掉 worktree 和分支，target 不受影响。
+
+    **没有工作区的任务也能丢** —— 那种任务批不了，再不让丢就只能一直挂在待审阅里。
+    """
+    store, _raw, workspace = await _workspace_for(request, task_id, required=False)
     task = await store.get_task(task_id)
     if task is None:
         raise HTTPException(404, "任务不存在")
     if task.status not in (TaskStatus.AWAITING_REVIEW, TaskStatus.FAILED, TaskStatus.INTERRUPTED):
         raise HTTPException(409, f"任务状态为 {task.status}，不能丢弃")
 
-    wm = request.app.state.workspaces
-    await wm.cleanup(workspace, delete_branch=True)
+    if workspace is not None:
+        await request.app.state.workspaces.cleanup(workspace, delete_branch=True)
     await store.set_status(task_id, TaskStatus.DISCARDED)
 
     refreshed = await store.get_task(task_id)

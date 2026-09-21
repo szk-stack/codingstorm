@@ -131,7 +131,7 @@ async function selectProject(id) {
   await loadTasks();
   await loadContext();
   updateRefTabs();
-  if (!$('#ctx-files').hidden) loadFileList();
+  refreshFilesIfVisible();
 }
 
 async function loadTasks() {
@@ -239,7 +239,7 @@ async function openTask(id, tab = 'chat') {
   await loadUsage(id);
   updateRefTabs();
   // 文件树还开着的话跟着任务刷新 —— 切到「本次任务」时看的就是这条任务的产出
-  if (!$('#ctx-files').hidden) loadFileList();
+  refreshFilesIfVisible();
   switchTab(tab);
   writeHash(id, tab);
   connectWs(id);
@@ -296,6 +296,7 @@ async function doApprove() {
     state.task = await api(`/api/tasks/${state.task.id}/approve`, { method: 'POST' });
     renderDetail();
     await loadTasks();
+    refreshFilesIfVisible();  // 主干刚往前走了，树上的东西变了
     toast('已合并到主干');
   } catch (err) {
     toast(`批准失败：${err.message}`, true);
@@ -308,6 +309,7 @@ async function doDiscard() {
     state.task = await api(`/api/tasks/${state.task.id}/discard`, { method: 'POST' });
     renderDetail();
     await loadTasks();
+    refreshFilesIfVisible();
     toast('已丢弃');
   } catch (err) {
     toast(`丢弃失败：${err.message}`, true);
@@ -620,6 +622,15 @@ function closeFile() {
   if (state.task) $('#detail-panel').hidden = false;
 }
 
+/** 文件树开着就刷一下。
+
+ 批准/丢弃会推进主干，切换任务会换掉「本次任务」的版本 —— 这些都会让树上的内容
+ 变样，而树只在自己被点开时才拉数据，不刷就一直是旧的（批准完看不到新文件就是这么来的）。
+ */
+function refreshFilesIfVisible() {
+  if (!$('#ctx-files').hidden) loadFileList();
+}
+
 // ---------------- 对话 ----------------
 
 const FOLLOWABLE = ['awaiting_review', 'failed'];
@@ -730,6 +741,7 @@ function connectWs(taskId) {
         // 状态变了，对话里要么多出 AI 这一轮的回复，要么输入框重新可用
         loadChat();
         updateRefTabs();
+        refreshFilesIfVisible();
         if (msg.task.status === 'awaiting_review') { loadDiff(); loadUsage(msg.task.id); }
         if (msg.task.status === 'merged' || msg.task.status === 'discarded') {
           $('#stream').append(el('div', { class: 'ev ev-init', text: `— 任务${STATUS_LABEL[msg.task.status]} —` }));

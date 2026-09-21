@@ -1,6 +1,7 @@
 """HTTP 接口测试。不启动调度器，只验证路由与校验。"""
 
 import shutil
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -385,6 +386,27 @@ def test_followup_rejects_empty_text(client: TestClient):
 
 def test_followup_missing_task_404(client: TestClient):
     assert client.post("/api/tasks/nope/messages", json={"text": "x"}).status_code == 404
+
+
+def test_discard_works_without_workspace(client: TestClient):
+    """「待审阅但没有工作区」的任务也要丢得掉。
+
+    早期版本留下过这种任务（那会儿还没记 worktree_path）—— 它批不了，
+    要是再不让丢，就永远挂在待审阅里清不掉。
+    """
+    p = _mk_project(client)
+    task = client.post(f"/api/projects/{p['id']}/tasks", json={"title": "x"}).json()
+
+    # 直接改库造出那个状态：走接口造不出来，任务得真跑过才会有工作区
+    db = client.app.state.config.db_path  # type: ignore[attr-defined]
+    con = sqlite3.connect(db)
+    con.execute("UPDATE tasks SET status = 'awaiting_review' WHERE id = ?", (task["id"],))
+    con.commit()
+    con.close()
+
+    r = client.post(f"/api/tasks/{task['id']}/discard")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "discarded"
 
 
 def test_messages_start_empty(client: TestClient):

@@ -155,7 +155,8 @@ async def run(url: str, wait_s: float, pre_script: str = "") -> int:
             if pre_script:
                 # 探针只能读，读不到「点了之后」的样子 —— 想验交互就先跑一段 JS
                 # （点页签、点文件），再让探针去读结果。
-                await evaluate(pre_script)
+                # 脚本里返回的值直接打出来，省得只能靠探针间接推断。
+                print(f"\n【预执行脚本返回】\n{await evaluate(pre_script)}")
                 await asyncio.sleep(1.5)
 
             for label, expr in PROBES.items():

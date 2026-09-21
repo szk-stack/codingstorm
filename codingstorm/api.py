@@ -89,29 +89,24 @@ async def get_project(request: Request, project_id: str) -> ProjectOut:
 
 
 async def _require_repo_ready(project: ProjectOut) -> None:
-    """仓库还没准备好就别收任务。
+    """提交前看一眼仓库，挡住注定跑不起来的任务。
 
-    否则任务注定失败，而用户要等到它排到队、跑起来才知道 —— 实测就是这样：
-    注册了项目、忘了 push，提交后看到的是「失败」，得去翻说明才知道原因。
+    **空仓库要放行** —— 全新项目就是这样的，平台会替它造一个初始提交当起点
+    （见 `WorkspaceManager._prepare`）。只有「有分支但没有 target_branch」才拦：
+    那说明推错了分支或者项目配错了，而任务会在切工作区时失败，用户要等到
+    排到队才看得到一个「失败」。
     """
     repo = Git(Path(project.repo_path))
     try:
-        if not await repo.branches():
-            raise HTTPException(
-                409,
-                f"仓库 {project.repo_path} 还是空的，一条提交都没有。\n"
-                f"先从本地 push 一次，例如：\n"
-                f"    git remote add server <ssh别名>:{project.repo_path}\n"
-                f"    git push -u server {project.target_branch}",
-            )
-        if not await repo.ref_exists(f"refs/heads/{project.target_branch}"):
-            raise HTTPException(
-                409,
-                f"仓库里没有 {project.target_branch} 分支 —— "
-                f"先 push 它，或者把项目的 target_branch 改成已有分支",
-            )
+        branches = await repo.branches()
     except GitError as exc:
         raise HTTPException(409, f"读不了仓库 {project.repo_path}：{exc}") from exc
+    if branches and project.target_branch not in branches:
+        raise HTTPException(
+            409,
+            f"仓库里没有 {project.target_branch} 分支（现有：{'、'.join(branches)}）—— "
+            f"先 push 它，或者把项目的 target_branch 改成已有分支",
+        )
 
 
 @router.post("/projects/{project_id}/tasks", response_model=TaskOut, status_code=201)

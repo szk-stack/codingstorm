@@ -232,7 +232,15 @@ class WorkspaceManager:
         # 注册时校验过，但那时仓库可能是空的（还没 push）。到这里才发现的话，
         # 报清楚原因，别让用户对着一句 ambiguous argument 猜。
         if not await repo.ref_exists(f"refs/heads/{target_branch}"):
-            raise RepoError(f"仓库里没有 {target_branch} 分支 —— 空仓库要先从本地 push 一次")
+            if await repo.branches():
+                raise RepoError(
+                    f"仓库里没有 {target_branch} 分支 —— 先 push 它，"
+                    f"或者把项目的 target_branch 改成已有分支"
+                )
+            # 全新项目：一条提交都没有，切不出工作区。造一个空树提交当基点，
+            # 「从零开始让 AI 写第一版」就靠这一步。
+            sha = await repo.create_initial_commit(target_branch, "codingstorm: 初始化空仓库")
+            log.info("仓库 %s 还没有提交，已生成初始提交 %s", repo_path, sha[:8])
 
         base = await repo.head_sha(target_branch)
         await repo.worktree_add(path, branch, base)

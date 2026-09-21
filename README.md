@@ -104,28 +104,34 @@ curl -X POST http://127.0.0.1:8787/api/projects \
 
 ### 6. 从零新建一个项目
 
-服务器连不上 GitHub，所以本地建好再推过去：
+只给一个名字就行 —— 空仓库平台会建好，**提交任务时它会给这个空仓库造一条初始提交当基点**，
+AI 就在上面写第一版：
 
 ```bash
-# 本地
-mkdir myapp && cd myapp
-git init -b main
-echo "# myapp" > README.md && git add -A && git commit -m init
-
-# 注册 —— 空仓库会自动建好
 curl -X POST http://127.0.0.1:8788/api/projects \
   -H 'content-type: application/json' -d '{"name":"myapp"}'
 
-# 把本地接到服务器上，推第一次
-git remote add server tencent:codingstorm/repos/myapp.git
-git push -u server main
+cs submit myapp "写一个快速排序"
 ```
 
-推完就能用了。以后 AI 合并的改动用 `git pull server main` 拿回来。
+跑完批准，`myapp` 的主干上就有代码了。
 
-> **一定要先 push 再提交任务。** 空仓库没有分支，也不该有任务跑在上面 ——
-> 提交时就会被挡下（409，并给出上面那两条命令）。这条约束是实测加上的：
-> 早先放任它入队，任务是注定失败的，而人只会看到一个「失败」，得翻说明才知道原因。
+之后想拉到本地接着开发，**从服务器 clone**：
+
+```bash
+git clone tencent:/home/ubuntu/codingstorm/repos/myapp.git myapp
+```
+
+> **为什么是 clone 而不是本地 `git init` 再 push。** 平台造的初始提交是仓库的根，
+> 本地另起炉灶的仓库和它没有共同祖先，直接 push 会被拒（non-fast-forward）。
+> 从它 clone 下来就顺了。
+>
+> 反过来，如果你想**接一个已有项目**，那就先把仓库推上来（见第 2 步），
+> 平台不会去动一个已经有分支的仓库 —— 它只给真正空的仓库造起点。
+>
+> 唯一会被挡下的情况：仓库里有分支，但没有你配的 `target_branch` 那条。
+> 这时提交任务会返回 409 并列出实际存在的分支 —— 那种任务注定跑不起来，
+> 不如在提交那一刻就说清楚。
 
 ### 7. 提交第一个任务
 
@@ -346,7 +352,7 @@ repos/              被调度的仓库。注册时留空 repo_path 就用这里�
 
 ```bash
 pip install -e ".[dev]"
-pytest -q          # 173 项
+pytest -q          # 174 项
 ```
 
 代码在 `codingstorm/`：`api.py`（HTTP）、`scheduler.py`（并发与生命周期）、`runner.py`（拉起子进程、

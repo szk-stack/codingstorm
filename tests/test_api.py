@@ -163,20 +163,11 @@ def test_create_task_unknown_project_404(client: TestClient):
     assert r.status_code == 404
 
 
-def test_create_task_on_empty_repo_rejected(client: TestClient):
-    """仓库还是空的就提交：当场挡下并说清怎么修。
-
-    实测踩过：放任它入队的话，任务是注定失败的，而用户要等它排到队才知道，
-    看到的还只是一个「失败」。
-    """
-    p = _mk_project(client, "empty", seed=False)
+def test_create_task_on_empty_repo_allowed(client: TestClient):
+    """空仓库放行 —— 全新项目就是这样，平台会给它造一个初始提交当起点。"""
+    p = _mk_project(client, "fresh", seed=False)
     r = client.post(f"/api/projects/{p['id']}/tasks", json={"title": "写一个快速排序"})
-    assert r.status_code == 409
-    detail = r.json()["detail"]
-    assert "还是空的" in detail
-    assert "git push" in detail  # 得给出可照抄的命令
-    # 一条都不该入队
-    assert client.get("/api/tasks", params={"project_id": p["id"]}).json() == []
+    assert r.status_code == 201, r.text
 
 
 def test_create_task_on_missing_branch_rejected(client: TestClient):

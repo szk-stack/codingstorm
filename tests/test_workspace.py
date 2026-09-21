@@ -54,17 +54,39 @@ def _write(path: Path, name: str, content: str) -> None:
 
 # ---------- 工作区生命周期 ----------
 
-def test_prepare_reports_missing_target_branch(env, tmp_path):
-    """空仓库（用户还没 push）时，别让任务对着一句 ambiguous argument 猜。"""
+def test_prepare_creates_initial_commit_for_empty_repo(env, tmp_path):
+    """全新项目：一条提交都没有的仓库切不出工作区，先造一个空树的初始提交。"""
     _, wm, _ = env
     empty = tmp_path / "empty.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(empty)], check=True)
 
-    with pytest.raises(RepoError, match="要先从本地 push"):
-        run(wm.prepare(
+    async def main():
+        ws = await wm.prepare(
             project_name="p", repo_path=str(empty), target_branch="main",
-            task_id="t1", title="x",
-        ))
+            task_id="t1", title="写一个快速排序",
+        )
+        assert ws.base_commit
+        assert git(["rev-parse", "main"], empty) == ws.base_commit
+        assert ws.path.exists()
+
+    run(main())
+
+
+def test_prepare_reports_missing_target_branch(env, tmp_path):
+    """仓库有分支、但没有 target_branch 那条 —— 不能自己造，得报错说清楚。"""
+    _, wm, _ = env
+    other = tmp_path / "other.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "dev", str(other)], check=True)
+
+    async def main():
+        await Git(other).create_initial_commit("dev", "init")  # 只有 dev，没有 main
+        with pytest.raises(RepoError, match="没有 main 分支"):
+            await wm.prepare(
+                project_name="p", repo_path=str(other), target_branch="main",
+                task_id="t1", title="x",
+            )
+
+    run(main())
 
 
 def test_worktree_is_isolated_from_main_repo(env):

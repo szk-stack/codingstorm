@@ -63,16 +63,22 @@ class Git:
 
     # ---------- 底层 ----------
 
-    async def _exec_raw(self, args: tuple[str, ...], cwd: Path) -> tuple[int, bytes, str]:
+    async def _exec_raw(
+        self, args: tuple[str, ...], cwd: Path, *, stdin_data: bytes | None = None
+    ) -> tuple[int, bytes, str]:
         proc = await asyncio.create_subprocess_exec(
             "git",
             *args,
             cwd=str(cwd),
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=(
+                asyncio.subprocess.PIPE
+                if stdin_data is not None
+                else asyncio.subprocess.DEVNULL
+            ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        out, err = await proc.communicate()
+        out, err = await proc.communicate(stdin_data)
         return proc.returncode or 0, out, err.decode("utf-8", "replace")
 
     async def _exec(self, args: tuple[str, ...], cwd: Path) -> tuple[int, str, str]:
@@ -101,6 +107,26 @@ class Git:
     async def branches(self) -> list[str]:
         out = await self.run("for-each-ref", "--format=%(refname:short)", "refs/heads/")
         return [line.strip() for line in out.splitlines() if line.strip()]
+
+    async def create_initial_commit(self, branch: str, message: str) -> str:
+        """给空仓库造一个初始提交：空树 + 一条提交，全程不需要工作区。
+
+        全新项目要靠它 —— 一条提交都没有的仓库切不出 worktree，
+        「让 AI 写第一版」就无从开始。
+        """
+        code, out, err = await self._exec_raw(("mktree",), self.path, stdin_data=b"")
+        if code != 0:
+            raise GitError(("mktree",), code, err, err)
+        tree = out.decode("utf-8", "replace").strip()
+        # 必须显式给身份：执行机上不一定配了 user.name，缺了 commit-tree 直接失败
+        sha = (
+            await self.run(
+                "-c", "user.name=codingstorm", "-c", "user.email=cs@localhost",
+                "commit-tree", tree, "-m", message,
+            )
+        ).strip()
+        await self.run("update-ref", f"refs/heads/{branch}", sha)
+        return sha
 
     async def is_ancestor(self, ancestor: str, descendant: str) -> bool:
         """用于判断「这个提交是否已经包含在目标分支里」—— 批准幂等的关键。"""

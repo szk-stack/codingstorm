@@ -122,9 +122,10 @@ def test_exception_in_runner_marks_failed(env):
     run(main())
 
 
-def test_empty_repo_fails_with_reason_on_attempt(env, tmp_path: Path):
-    """仓库还空着就提交任务：原因要能看懂，而且落在 attempt 上（任务级说明只有一行）。"""
-    _, store, _, sched, _ = env
+def test_empty_repo_gets_initial_commit(env, tmp_path: Path):
+    """全新项目：仓库一条提交都没有，平台先造一个空树的初始提交当基点，
+    任务照跑不误。"""
+    _, store, runner, sched, _ = env
     empty = tmp_path / "empty.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(empty)], check=True)
 
@@ -132,17 +133,14 @@ def test_empty_repo_fails_with_reason_on_attempt(env, tmp_path: Path):
         p = await store.create_project(
             ProjectCreate(name="empty", repo_path=str(empty), target_branch="main")
         )
-        await store.create_task(p.id, TaskCreate(title="A"))
+        await store.create_task(p.id, TaskCreate(title="写一个快速排序"))
         await sched._tick()
         await _drain(sched)
 
         task = (await store.list_tasks())[0]
-        assert task.status == TaskStatus.FAILED
-        assert "要先从本地 push" in (task.error_text or "")
-
-        attempt = (await store.list_attempts(task.id))[0]
-        assert attempt.is_error is True
-        assert "要先从本地 push" in (attempt.error_text or "")
+        assert task.status == TaskStatus.AWAITING_REVIEW
+        assert task.base_commit  # 初始提交成了基点
+        assert len(runner.calls) == 1
 
     run(main())
 
@@ -176,47 +174,34 @@ def test_followup_resumes_session_in_same_worktree(env):
     run(main())
 
 
-def test_first_turn_failure_with_followup_starts_fresh(env, tmp_path: Path):
-    """第一轮在切工作区时就没跑起来（仓库是空的）：没有会话可接，这次带着
-    追加说明从头跑，而不是硬去 resume 一个不存在的会话。"""
-    _, store, runner, sched, _ = env
-    empty = tmp_path / "empty.git"
-    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(empty)], check=True)
-
-    def push_initial_commit() -> None:
-        """第一轮失败后用户才推上去 —— 这才是「空仓库」的真实剧本。"""
-        work = tmp_path / "work"
-        subprocess.run(["git", "clone", "-q", str(empty), str(work)], check=True)
-        (work / "a.txt").write_text("x", encoding="utf-8")
-        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
-        subprocess.run(
-            ["git", "-C", str(work), "-c", "user.email=t@l", "-c", "user.name=t",
-             "commit", "-q", "-m", "init"],
-            check=True,
-        )
-        subprocess.run(["git", "-C", str(work), "push", "-q", "origin", "main"], check=True)
+def test_followup_without_session_starts_fresh(env):
+    """第一轮没留下会话（还没跑到就炸了）：没有可接的历史，这次带着追加说明
+    从主干重开，而不是硬去 resume 一个不存在的会话。"""
+    _, store, runner, sched, repo = env
+    runner.outcome_fn = lambda **_: RuntimeError("第一次就炸了")
 
     async def main():
-        p = await store.create_project(
-            ProjectCreate(name="empty", repo_path=str(empty), target_branch="main")
-        )
-        task = await store.create_task(p.id, TaskCreate(title="加一个 mode 函数"))
+        pid = await _mk(store, repo)
         await sched._tick()
         await _drain(sched)
-        assert (await store.get_task(task.id)).status == TaskStatus.FAILED
-        assert runner.calls == []  # 连 runner 都没到
+        task = (await store.list_tasks())[0]
+        assert task.status == TaskStatus.FAILED
+        assert await store.last_session_id(task.id) is None
 
-        push_initial_commit()
+        # 换回正常的假 runner，再追加一句
+        runner.outcome_fn = lambda **kw: RunOutcome(
+            saw_result=True, is_error=False, session_id=kw.get("session_id")
+        )
         await store.add_message(task.id, "补充一句说明")
         await store.requeue(task.id)
         await sched._tick()
         await _drain(sched)
 
-        second = runner.calls[0]
+        second = runner.calls[1]
         assert second["resume"] is False
         assert "补充一句说明" in second["prompt"]
-        # 第一轮的上下文注入照旧
-        assert "加一个 mode 函数" in second["prompt"]
+        # 第一轮的上下文注入照旧（任务标题是 _mk 建的 "A"，整段 prompt 里带着它）
+        assert second["prompt"].startswith("# 项目约定")
 
     run(main())
 

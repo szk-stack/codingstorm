@@ -88,11 +88,39 @@ async def get_project(request: Request, project_id: str) -> ProjectOut:
     return project
 
 
+async def _require_repo_ready(project: ProjectOut) -> None:
+    """仓库还没准备好就别收任务。
+
+    否则任务注定失败，而用户要等到它排到队、跑起来才知道 —— 实测就是这样：
+    注册了项目、忘了 push，提交后看到的是「失败」，得去翻说明才知道原因。
+    """
+    repo = Git(Path(project.repo_path))
+    try:
+        if not await repo.branches():
+            raise HTTPException(
+                409,
+                f"仓库 {project.repo_path} 还是空的，一条提交都没有。\n"
+                f"先从本地 push 一次，例如：\n"
+                f"    git remote add server <ssh别名>:{project.repo_path}\n"
+                f"    git push -u server {project.target_branch}",
+            )
+        if not await repo.ref_exists(f"refs/heads/{project.target_branch}"):
+            raise HTTPException(
+                409,
+                f"仓库里没有 {project.target_branch} 分支 —— "
+                f"先 push 它，或者把项目的 target_branch 改成已有分支",
+            )
+    except GitError as exc:
+        raise HTTPException(409, f"读不了仓库 {project.repo_path}：{exc}") from exc
+
+
 @router.post("/projects/{project_id}/tasks", response_model=TaskOut, status_code=201)
 async def create_task(request: Request, project_id: str, spec: TaskCreate) -> TaskOut:
     store = _store(request)
-    if await store.get_project(project_id) is None:
+    project = await store.get_project(project_id)
+    if project is None:
         raise HTTPException(404, "项目不存在")
+    await _require_repo_ready(project)
     return await store.create_task(project_id, spec)
 
 

@@ -1,5 +1,6 @@
 """HTTP 接口测试。不启动调度器，只验证路由与校验。"""
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -20,13 +21,42 @@ def client(tmp_path: Path):
         yield c
 
 
-def _mk_project(client: TestClient, name: str = "demo", repo: str | None = None) -> dict:
+def _seed(repo_path: Path, branch: str = "main") -> None:
+    """确保仓库里有一条分支。
+
+    空仓库现在收不了任务（提交时就会挡下），所以凡是要提交任务的测试都得先有提交。
+    已经有该分支就什么都不做。
+    """
+    def git(*args: str, check: bool = False):
+        return subprocess.run(["git", *args], capture_output=True, text=True, check=check)
+
+    if git("-C", str(repo_path), "rev-parse", "--verify", "--quiet",
+           f"refs/heads/{branch}").returncode == 0:
+        return
+    work = repo_path.parent / f"{repo_path.name}.seed"
+    shutil.rmtree(work, ignore_errors=True)
+    # 裸仓库没有工作区，只能 clone 出来提交再 push 回去
+    git("clone", "-q", str(repo_path), str(work), check=True)
+    git("-C", str(work), "checkout", "-q", "-b", branch, check=True)
+    (work / "README.md").write_text("# seed\n", encoding="utf-8")
+    git("-C", str(work), "add", "-A", check=True)
+    git("-C", str(work), "-c", "user.email=t@l", "-c", "user.name=t",
+        "commit", "-q", "-m", "init", check=True)
+    git("-C", str(work), "push", "-q", "origin", branch, check=True)
+
+
+def _mk_project(
+    client: TestClient, name: str = "demo", repo: str | None = None, *, seed: bool = True
+) -> dict:
     body: dict = {"name": name}
     if repo is not None:
         body["repo_path"] = repo
     r = client.post("/api/projects", json=body)
     assert r.status_code == 201, r.text
-    return r.json()
+    p = r.json()
+    if seed:
+        _seed(Path(p["repo_path"]), p["target_branch"])
+    return p
 
 
 def test_health(client: TestClient):
@@ -131,6 +161,31 @@ def test_create_task_and_list(client: TestClient):
 def test_create_task_unknown_project_404(client: TestClient):
     r = client.post("/api/projects/nope/tasks", json={"title": "x"})
     assert r.status_code == 404
+
+
+def test_create_task_on_empty_repo_rejected(client: TestClient):
+    """仓库还是空的就提交：当场挡下并说清怎么修。
+
+    实测踩过：放任它入队的话，任务是注定失败的，而用户要等它排到队才知道，
+    看到的还只是一个「失败」。
+    """
+    p = _mk_project(client, "empty", seed=False)
+    r = client.post(f"/api/projects/{p['id']}/tasks", json={"title": "写一个快速排序"})
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert "还是空的" in detail
+    assert "git push" in detail  # 得给出可照抄的命令
+    # 一条都不该入队
+    assert client.get("/api/tasks", params={"project_id": p["id"]}).json() == []
+
+
+def test_create_task_on_missing_branch_rejected(client: TestClient):
+    """仓库里有分支，但推的不是 target_branch 那条 —— 同样要当场挡下。"""
+    p = _mk_project(client, "wrong-branch", seed=False)
+    _seed(Path(p["repo_path"]), "dev")  # 推的是 dev，不是 main
+    r = client.post(f"/api/projects/{p['id']}/tasks", json={"title": "x"})
+    assert r.status_code == 409
+    assert "没有 main 分支" in r.json()["detail"]
 
 
 def test_create_task_rejects_empty_title(client: TestClient):

@@ -64,6 +64,18 @@ def test_health(client: TestClient):
     assert client.get("/api/health").json() == {"ok": True}
 
 
+def test_assets_must_revalidate(client: TestClient):
+    """页面外壳必须让浏览器回源校验。
+
+    实测踩过：app.js 被浏览器缓存住不再来取，部署完新版本后页面上跑的还是旧的 JS，
+    而 index.html 是新的 —— 新加的页签点上去毫无反应，看着像功能坏了。
+    """
+    for path in ("/", "/static/app.js"):
+        r = client.get(path)
+        assert r.status_code == 200, path
+        assert r.headers.get("cache-control") == "no-cache", path
+
+
 def test_create_and_get_project(client: TestClient):
     p = _mk_project(client)
     assert p["name"] == "demo"

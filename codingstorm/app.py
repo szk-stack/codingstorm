@@ -83,6 +83,21 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
             log.info("codingstorm 已停止")
 
     app = FastAPI(title="codingstorm", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def revalidate_assets(request, call_next):
+        """页面外壳一律要求浏览器回源校验。
+
+        不设的话浏览器会把 app.js 缓存住不再来取 —— 部署完新版本，页面上跑的还是旧的，
+        而 index.html 是新的，两边对不上：实测新加的「文件」页签点上去毫无反应，
+        看着像功能坏了，其实是 JS 没更新。`no-cache` 是「用之前先问一声」，
+        文件没变时靠 ETag 走 304，不额外传内容。
+        """
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["cache-control"] = "no-cache"
+        return response
+
     app.state.config = config
     app.include_router(router)
     app.include_router(pages)

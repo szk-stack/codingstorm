@@ -11,6 +11,8 @@
     cs diff 6d94534015bc
     cs say 6d94534015bc "改成返回列表，不要返回单个值"
     cs approve 6d94534015bc
+    cs schedule add demo "每天生成日报" --daily 09:00
+    cs window
 """
 
 from __future__ import annotations
@@ -21,6 +23,8 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 DEFAULT_BASE = os.environ.get("CODINGSTORM_API", "http://127.0.0.1:8788")
 
@@ -110,6 +114,10 @@ def cmd_submit(args) -> int:
         {"title": args.title, "body": args.body or "", "kind": args.kind, "priority": args.priority},
     )
     print(f"已入队 {task['id']}（{_status(task)}）：{task['title']}")
+    w = _window(args.base)
+    if w["enabled"] and not w["open"]:
+        print(f"注意：执行窗口现在关着，要等到 {_local(w['next_open_at'], w['timezone'])} 才会跑")
+        print("急着跑的话： cs window off")
     print(f"跑完可看： cs show {task['id']}")
     return 0
 
@@ -127,6 +135,12 @@ def cmd_ls(args) -> int:
         return 0
     for t in rows:
         print(f"{t['id']}  {_status(t):6s}  {t['title'][:60]}")
+
+    # 排队中的任务在窗口外一条都跑不了，不说清楚会让人以为是卡住了
+    if any(t["status"] == "queued" for t in rows):
+        w = _window(args.base)
+        if w["enabled"] and not w["open"]:
+            print(f"\n（有任务在排队 —— {_window_line(w)}）")
     return 0
 
 
@@ -230,10 +244,217 @@ def cmd_usage(args) -> int:
     return 0
 
 
+# ---------- 执行窗口 ----------
+
+
+def _window(base: str) -> dict:
+    return call(base, "GET", "/api/window")
+
+
+def _local(iso: str | None, tz: str) -> str:
+    """UTC 串按配置的时区显示 —— 用户配的「9 点」指的是这个时区的 9 点，
+    和跑 CLI 的这台机器在哪个时区无关。"""
+    if not iso:
+        return "—"
+    moment = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    return moment.astimezone(ZoneInfo(tz)).strftime("%m-%d %H:%M")
+
+
+def _window_line(w: dict) -> str:
+    if not w["enabled"]:
+        return "执行窗口：未启用（任务随时可跑）"
+    spans = "、".join(f"{a}–{b}" for a, b in w["windows"])
+    if w["disabled"]:
+        return f"执行窗口：{spans}（{w['timezone']}）· **已被临时关闭**，任务不排队等窗口"
+    if w["open"]:
+        return f"执行窗口：{spans}（{w['timezone']}）· 开启中，{_local(w['next_close_at'], w['timezone'])} 关闭"
+    return f"执行窗口：{spans}（{w['timezone']}）· 已关闭，{_local(w['next_open_at'], w['timezone'])} 开启"
+
+
+def cmd_window(args) -> int:
+    if args.project:
+        return _project_window(args)
+
+    if args.action == "off":
+        w = call(args.base, "POST", "/api/window", {"disabled": True})
+        print("已临时关闭执行窗口 —— 所有任务立即恢复执行")
+    elif args.action == "on":
+        w = call(args.base, "POST", "/api/window", {"disabled": False})
+        print("已恢复执行窗口限制")
+    else:
+        w = _window(args.base)
+    print(_window_line(w))
+    if w["disabled"]:
+        print("注意：这是内存态开关，平台重启后会自动恢复窗口限制。")
+    return 0
+
+
+def _parse_hours(raw: str) -> list[list[str]]:
+    """`"09:00-18:00,20:00-22:00"` → `[["09:00","18:00"], ["20:00","22:00"]]`"""
+    spans = []
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = [p.strip() for p in chunk.replace("–", "-").replace("—", "-").split("-")]
+        if len(parts) != 2:
+            print(f"时段要写成 09:00-18:00 这样，收到的是 {chunk!r}", file=sys.stderr)
+            raise SystemExit(1)
+        spans.append(parts)
+    if not spans:
+        print("--windows 是空的", file=sys.stderr)
+        raise SystemExit(1)
+    return spans
+
+
+def _project_window(args) -> int:
+    project = _find_project(args.base, args.project)
+    mode = args.action or "show"
+
+    if mode == "show":
+        current = project.get("window_override")
+        print(f"{project['name']} 的窗口覆盖：{_describe_override(current)}")
+        print(_window_line(_window(args.base)))
+        return 0
+
+    if mode == "inherit":
+        body = {"mode": "inherit"}
+    elif mode == "always":
+        body = {"mode": "always"}
+    elif mode == "custom":
+        if not args.windows:
+            print('custom 模式要配 --windows "09:00-18:00"', file=sys.stderr)
+            raise SystemExit(1)
+        body = {"mode": "custom", "windows": _parse_hours(args.windows)}
+    else:
+        print(
+            f"认不出 {mode!r}。项目窗口模式只有三种：always（不受限）、inherit（跟随全局）"
+            "，或 custom（配 --windows）",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    updated = call(args.base, "PUT", f"/api/projects/{project['id']}/window", body)
+    print(f"{updated['name']} 的窗口覆盖已设为：{_describe_override(updated['window_override'])}")
+    return 0
+
+
+def _describe_override(raw: str | None) -> str:
+    if not raw:
+        return "跟随全局"
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return f"（读不懂：{raw}）"
+    if data.get("mode") == "always":
+        return "不受窗口限制"
+    if data.get("mode") == "custom":
+        spans = "、".join(f"{a}–{b}" for a, b in data.get("windows", []))
+        return f"自定义时段 {spans}"
+    return raw
+
+
+# ---------- 定时任务 ----------
+
+
+def _rule_from_args(args) -> dict:
+    """命令行 → 规则。三种形态互斥，argparse 的互斥组已经保证只来一个。"""
+    if args.at:
+        text = args.at.strip().replace(" ", "T")
+        try:
+            datetime.strptime(text, "%Y-%m-%dT%H:%M")
+        except ValueError:
+            print(f"--at 要写成「2026-09-23 09:00」这种，收到的是 {args.at!r}", file=sys.stderr)
+            raise SystemExit(1) from None
+        return {"type": "once", "at": text}
+    if args.daily:
+        return {"type": "daily", "time": args.daily}
+    days = [d.strip() for d in (args.days or "").split(",") if d.strip()]
+    if not days:
+        print("--weekly 还要配一个 --days，比如 --days mon,wed", file=sys.stderr)
+        raise SystemExit(1)
+    return {"type": "weekly", "time": args.weekly, "days": days}
+
+
+def cmd_schedule_ls(args) -> int:
+    query = []
+    if args.project:
+        query.append(f"project_id={_find_project(args.base, args.project)['id']}")
+    path = "/api/schedules" + ("?" + "&".join(query) if query else "")
+    rows = call(args.base, "GET", path) or []
+    tz = _window(args.base)["timezone"]
+    if not rows:
+        print("（没有定时任务）")
+        return 0
+
+    for s in rows:
+        if s["missed_at"]:
+            state = "已错过"
+        elif not s["enabled"]:
+            state = "已停用"
+        elif s["next_run_at"] is None:
+            state = "已完成"
+        else:
+            state = _local(s["next_run_at"], tz)
+        print(f"{s['id']}  {state:16s}  {s['rule_text']:22s}  {s['title'][:40]}")
+        if s["last_task_id"] and s["last_task_status"] == "awaiting_review":
+            # 未合并的改动对后续任务不可见，这是每天跑一次的定时任务最容易踩的坑
+            print(f"{'':14s}上一轮 {s['last_task_id']} 还没审，本轮会切在旧主干上")
+    return 0
+
+
+def cmd_schedule_add(args) -> int:
+    project = _find_project(args.base, args.project)
+    schedule = call(
+        args.base,
+        "POST",
+        f"/api/projects/{project['id']}/schedules",
+        {
+            "title": args.title,
+            "body": args.body or "",
+            "kind": args.kind,
+            "priority": args.priority,
+            "rule": _rule_from_args(args),
+        },
+    )
+    tz = _window(args.base)["timezone"]
+    print(f"已建立 {schedule['id']}：{schedule['rule_text']}")
+    print(f"下一次 {_local(schedule['next_run_at'], tz)}（{tz}）")
+    return 0
+
+
+def cmd_schedule_rm(args) -> int:
+    call(args.base, "DELETE", f"/api/schedules/{args.schedule}")
+    print(f"已删除 {args.schedule}（它已经生成的任务不受影响）")
+    return 0
+
+
+def cmd_schedule_toggle(args) -> int:
+    on = args.action == "resume"
+    s = call(args.base, "PATCH", f"/api/schedules/{args.schedule}", {"enabled": on})
+    tz = _window(args.base)["timezone"]
+    if on:
+        print(f"已启用，下一次 {_local(s['next_run_at'], tz)}")
+    else:
+        print("已停用")
+    return 0
+
+
+def cmd_schedule_run(args) -> int:
+    task = call(args.base, "POST", f"/api/schedules/{args.schedule}/run")
+    w = _window(args.base)
+    print(f"已入队 {task['id']}：{task['title']}")
+    if w["enabled"] and not w["open"]:
+        print(f"注意：执行窗口现在关着，要等到 {_local(w['next_open_at'], w['timezone'])} 才会跑")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cs", description="codingstorm 命令行")
-    p.add_argument("--base", default=DEFAULT_BASE, help="API 地址（默认 %(default)s）")
-    sub = p.add_subparsers(dest="command", required=True)
+    # 顶层解析器单独起个名字：下面每一段都要复用短变量名，
+    # 用 p 的话最后 return 回去的就是最后那个子解析器（踩过）
+    top = argparse.ArgumentParser(prog="cs", description="codingstorm 命令行")
+    top.add_argument("--base", default=DEFAULT_BASE, help="API 地址（默认 %(default)s）")
+    sub = top.add_subparsers(dest="command", required=True)
 
     sub.add_parser("projects", help="列出项目").set_defaults(func=cmd_projects)
 
@@ -268,7 +489,51 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_say)
 
     sub.add_parser("usage", help="查看用量与成本").set_defaults(func=cmd_usage)
-    return p
+
+    # ---- 定时任务 ----
+    s = sub.add_parser("schedule", help="定时任务：到点自动提交")
+    ssub = s.add_subparsers(dest="action", required=True)
+
+    p = ssub.add_parser("ls", help="列出定时任务")
+    p.add_argument("--project")
+    p.set_defaults(func=cmd_schedule_ls)
+
+    p = ssub.add_parser("add", help="新建定时任务")
+    p.add_argument("project", help="项目名或 id")
+    p.add_argument("title", help="每次生成的任务标题")
+    when = p.add_mutually_exclusive_group(required=True)
+    when.add_argument("--at", metavar="时间", help='一次性，如 --at "2026-09-23 09:00"')
+    when.add_argument("--daily", metavar="HH:MM", help="每天这个点")
+    when.add_argument("--weekly", metavar="HH:MM", help="每周这个点，配合 --days")
+    p.add_argument("--days", help="星期几，如 mon,wed（仅配合 --weekly）")
+    p.add_argument("--body", help="任务正文")
+    p.add_argument("--kind", default="task", choices=["requirement", "instruction", "bug", "task"])
+    p.add_argument("--priority", type=int, default=0)
+    p.set_defaults(func=cmd_schedule_add)
+
+    for name, fn, help_text in (
+        ("rm", cmd_schedule_rm, "删除（已生成的任务不受影响）"),
+        ("pause", cmd_schedule_toggle, "停用，不再触发"),
+        ("resume", cmd_schedule_toggle, "重新启用并按规则重算下一次"),
+        ("run", cmd_schedule_run, "立刻跑一次，不影响原定排期"),
+    ):
+        p = ssub.add_parser(name, help=help_text)
+        p.add_argument("schedule", help="定时任务 id")
+        p.set_defaults(func=fn)
+
+    # ---- 执行窗口 ----
+    p = sub.add_parser("window", help="查看执行窗口、临时开关它，或给单个项目配例外")
+    p.add_argument(
+        "action",
+        nargs="?",
+        default="",
+        help="off = 临时关闭（急事用），on = 恢复；"
+        "配了 --project 时这里填 always / inherit / custom",
+    )
+    p.add_argument("--project", help="改单个项目的窗口覆盖，不填就看全局")
+    p.add_argument("--windows", help='custom 模式的时段，如 "09:00-18:00"，多段用逗号分隔')
+    p.set_defaults(func=cmd_window)
+    return top
 
 
 def main(argv: list[str] | None = None) -> int:

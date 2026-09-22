@@ -18,6 +18,8 @@ const state = {
   projectId: null,
   tasks: [],
   task: null,
+  schedules: [],
+  window: null,
   ws: null,
   seen: new Set(),   // 已渲染的事件 seq，用于去重（历史与实时可能重叠）
   expanded: new Set(),
@@ -84,6 +86,26 @@ function shortSha(sha) {
   return sha ? sha.slice(0, 8) : '—';
 }
 
+/** 时间一律按**配置的时区**显示，不用浏览器时区。
+ *  用户配的「每天 9 点」指的是那个时区的 9 点，浏览器在哪儿不影响它的含义。 */
+function fmtLocal(iso, withDate = true) {
+  if (!iso) return '—';
+  const opts = { hour: '2-digit', minute: '2-digit', hour12: false };
+  if (withDate) Object.assign(opts, { month: '2-digit', day: '2-digit' });
+  if (state.window && state.window.timezone) opts.timeZone = state.window.timezone;
+  return new Intl.DateTimeFormat('zh-CN', opts).format(new Date(iso));
+}
+
+function untilText(iso) {
+  if (!iso) return '';
+  const minutes = Math.round((new Date(iso).getTime() - Date.now()) / 60000);
+  if (minutes <= 0) return '马上';
+  if (minutes < 60) return `${minutes} 分钟后`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时 ${minutes % 60} 分后`;
+  return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时后`;
+}
+
 // ---------------- 项目 ----------------
 
 async function loadProjects() {
@@ -129,7 +151,9 @@ async function selectProject(id) {
   const project = state.projects.find((p) => p.id === id);
   $('#queue-title').textContent = project ? `${project.name} 的任务` : '任务队列';
   await loadTasks();
+  await loadSchedules();
   await loadContext();
+  renderWindow();  // 横幅里那行「本项目」跟着选中项目走
   updateRefTabs();
   refreshFilesIfVisible();
 }
@@ -152,17 +176,24 @@ function renderTasks() {
     ul.append(el('li', { class: 'muted', text: '队列为空' }));
     return;
   }
+  // 窗口关着时排队中的任务一条都跑不了。不标出来的话，看起来就像卡死了
+  const waiting = !!(state.window && state.window.enabled && !state.window.open);
+
   for (const t of state.tasks) {
     if (state.task && state.task.id === t.id) {
       const fresh = state.task;
       Object.assign(t, { status: fresh.status });
+    }
+    const title = el('span', { class: 'title', text: t.title });
+    if (waiting && t.status === 'queued') {
+      title.append(el('span', { class: 'muted small', text: ' · 等窗口' }));
     }
     ul.append(el('li', {
       class: state.task && state.task.id === t.id ? 'active' : '',
       onclick: () => openTask(t.id),
     },
       badge(t.status),
-      el('span', { class: 'title', text: t.title }),
+      title,
     ));
   }
 }
@@ -189,9 +220,265 @@ async function submitTask(form) {
   }
 }
 
+// ---------------- 执行窗口 ----------------
+
+async function loadWindow() {
+  state.window = await api('/api/window');
+  renderWindow();
+}
+
+function renderWindow() {
+  const w = state.window;
+  const box = $('#window-banner');
+  if (!w || !w.enabled) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  box.replaceChildren();
+
+  const spans = w.windows.map(([a, b]) => `${a}–${b}`).join('、');
+  let text;
+  if (w.disabled) {
+    text = `执行窗口 ${spans} 已临时关闭 —— 任务不再等窗口`;
+  } else if (w.open) {
+    text = `谷时窗口 ${spans}（${w.timezone}）· 开启中，${untilText(w.next_close_at)}关闭`;
+  } else {
+    text = `谷时窗口 ${spans}（${w.timezone}）· 已关闭，${untilText(w.next_open_at)}开启`;
+  }
+
+  box.classList.toggle('warn', w.disabled);
+  box.append(el('span', { class: 'banner-text', text }));
+  box.append(el('button', {
+    class: w.disabled ? '' : 'ghost',
+    text: w.disabled ? '恢复窗口限制' : '临时关闭窗口',
+    title: w.disabled
+      ? '重新按窗口执行任务'
+      : '急事用：立即放行所有排队任务。重启平台后会自动恢复限制',
+    onclick: () => toggleWindow(!w.disabled),
+  }));
+  if (w.disabled) {
+    // 不说清楚的话，第二天看到账单才知道忘了恢复
+    box.append(el('span', { class: 'muted', text: '重启平台会自动恢复' }));
+  }
+  renderProjectWindow();
+}
+
+/** 项目级的窗口例外。和全局开关挤在同一条横幅里 —— 它们本来就在讲同一件事。 */
+function renderProjectWindow() {
+  const box = $('#window-banner');
+  const project = state.projects.find((p) => p.id === state.projectId);
+  if (!project) return;
+
+  const current = parseOverride(project.window_override);
+  const select = el('select', {
+    class: 'small',
+    title: '这个项目要不要跟着谷时窗口走',
+    onchange: (e) => setProjectWindow(e.target.value),
+  },
+    el('option', { value: 'inherit' }, '跟随全局'),
+    el('option', { value: 'always' }, '本项目不受限'),
+    el('option', { value: 'custom' }, '本项目自定义时段…'),
+  );
+  select.value = current.mode;
+  box.append(el('span', { class: 'proj-window' }, `本项目：`, select));
+}
+
+function parseOverride(raw) {
+  if (!raw) return { mode: 'inherit' };
+  try {
+    const data = JSON.parse(raw);
+    return { mode: data.mode === 'always' || data.mode === 'custom' ? data.mode : 'inherit' };
+  } catch (_) {
+    return { mode: 'inherit' };
+  }
+}
+
+async function setProjectWindow(mode) {
+  let windows = null;
+  if (mode === 'custom') {
+    const answer = prompt('这个项目允许执行的时段，如 09:00-18:00（多段用逗号分隔）');
+    if (answer === null) { renderWindow(); return; }
+    windows = answer.split(',').map((s) => s.trim()).filter(Boolean)
+      .map((s) => s.split(/[-–—]/).map((p) => p.trim()));
+    if (!windows.length || windows.some((w) => w.length !== 2)) {
+      toast('时段要写成 09:00-18:00 这样', true);
+      renderWindow();
+      return;
+    }
+  }
+  try {
+    const body = windows ? { mode, windows } : { mode };
+    const updated = await api(`/api/projects/${state.projectId}/window`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
+    Object.assign(state.projects.find((p) => p.id === updated.id), updated);
+    renderWindow();
+    toast('已更新本项目的窗口设置');
+  } catch (err) {
+    toast(`设置失败：${err.message}`, true);
+    renderWindow();  // 把下拉框拨回真实值
+  }
+}
+
+async function toggleWindow(disabled) {
+  try {
+    state.window = await api('/api/window', {
+      method: 'POST',
+      body: JSON.stringify({ disabled }),
+    });
+    renderWindow();
+    await loadTasks();
+    toast(disabled ? '已临时关闭窗口，排队中的任务会立刻开始跑' : '已恢复窗口限制');
+  } catch (err) {
+    toast(`操作失败：${err.message}`, true);
+  }
+}
+
+// ---------------- 定时任务 ----------------
+
+async function loadSchedules() {
+  if (!state.projectId) {
+    state.schedules = [];
+  } else {
+    state.schedules = await api(`/api/schedules?project_id=${encodeURIComponent(state.projectId)}`);
+  }
+  renderSchedules();
+}
+
+function scheduleState(s) {
+  if (s.missed_at) return { label: '已错过', cls: 'failed' };
+  if (!s.enabled) return { label: '已停用', cls: 'cancelled' };
+  if (!s.next_run_at) return { label: '已完成', cls: 'merged' };
+  return { label: `下次 ${fmtLocal(s.next_run_at)}`, cls: 'queued' };
+}
+
+function renderSchedules() {
+  const ul = $('#schedules');
+  ul.replaceChildren();
+  $('#schedule-count').textContent = state.schedules.length ? `${state.schedules.length} 条` : '';
+
+  if (!state.schedules.length) {
+    ul.append(el('li', { class: 'muted', text: '还没有定时任务 —— 比如「每天 9 点跑一遍文档里的命令」' }));
+    return;
+  }
+
+  for (const s of state.schedules) {
+    const st = scheduleState(s);
+    const row = el('li', { class: 'schedule' },
+      el('div', { class: 'schedule-head' },
+        el('span', { class: `badge ${st.cls}`, text: st.label }),
+        el('span', { class: 'rule', text: s.rule_text }),
+        el('span', { class: 'title', text: s.title }),
+      ),
+    );
+
+    const meta = [];
+    if (s.run_count) meta.push(`自动触发 ${s.run_count} 次`);
+    if (s.last_run_at) meta.push(`上次 ${fmtLocal(s.last_run_at)}`);
+    if (meta.length) row.append(el('div', { class: 'muted small', text: meta.join(' · ') }));
+
+    if (s.last_task_id && s.last_task_status === 'awaiting_review') {
+      // 未合并的改动对后续任务不可见，这是周期任务最容易踩的坑
+      row.append(el('div', { class: 'warn small' },
+        `上一轮 ${s.last_task_id.slice(0, 8)} 还没审，本轮会切在旧主干上`));
+    }
+    if (s.missed_at) {
+      row.append(el('div', { class: 'warn small', text: '到点时平台没在跑，这一轮没有执行' }));
+    }
+
+    const actions = el('div', { class: 'row' },
+      el('button', { class: 'ghost', text: '立即跑一次', onclick: () => scheduleAction(s.id, 'run') }),
+      el('button', {
+        class: 'ghost',
+        text: s.enabled ? '停用' : '启用',
+        onclick: () => scheduleAction(s.id, s.enabled ? 'pause' : 'resume'),
+      }),
+      el('button', { class: 'danger', text: '删除', onclick: () => scheduleAction(s.id, 'rm') }),
+    );
+    if (s.last_task_id) {
+      actions.append(el('button', {
+        class: 'ghost', text: '看上一轮',
+        onclick: () => openTask(s.last_task_id),
+      }));
+    }
+    row.append(actions);
+    ul.append(row);
+  }
+}
+
+async function createSchedule(form) {
+  if (!state.projectId) { toast('先选一个项目', true); return; }
+  const data = Object.fromEntries(new FormData(form));
+  if (!data.title || !data.title.trim()) { toast('要写清楚到点做什么', true); return; }
+
+  const mode = data.mode;
+  let rule;
+  if (mode === 'once') {
+    if (!data.date) { toast('选一个日期', true); return; }
+    rule = { type: 'once', at: `${data.date}T${data.time}` };
+  } else if (mode === 'weekly') {
+    const days = [...form.querySelectorAll('#schedule-weekdays input:checked')].map((i) => i.value);
+    if (!days.length) { toast('至少选一个星期几', true); return; }
+    rule = { type: 'weekly', days, time: data.time };
+  } else {
+    rule = { type: 'daily', time: data.time };
+  }
+
+  try {
+    const s = await api(`/api/projects/${state.projectId}/schedules`, {
+      method: 'POST',
+      body: JSON.stringify({ title: data.title, kind: data.kind || 'task', rule }),
+    });
+    form.reset();
+    form.hidden = true;
+    syncScheduleForm();
+    await loadSchedules();
+    toast(`已建立：${s.rule_text}，下一次 ${fmtLocal(s.next_run_at)}`);
+  } catch (err) {
+    toast(`建立失败：${err.message}`, true);
+  }
+}
+
+async function scheduleAction(id, action) {
+  if (action === 'rm' && !confirm('删掉这条定时任务？（它已经生成的任务会留着）')) return;
+  try {
+    if (action === 'run') {
+      const t = await api(`/api/schedules/${id}/run`, { method: 'POST' });
+      await loadTasks();
+      toast(`已入队 ${t.id}`);
+      await openTask(t.id);
+      return;
+    }
+    if (action === 'rm') {
+      await api(`/api/schedules/${id}`, { method: 'DELETE' });
+    } else {
+      await api(`/api/schedules/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: action === 'resume' }),
+      });
+    }
+    await loadSchedules();
+    toast({ rm: '已删除', pause: '已停用', resume: '已重新启用' }[action]);
+  } catch (err) {
+    toast(`操作失败：${err.message}`, true);
+  }
+}
+
+/** 切换规则类型时显示对应的输入项。 */
+function syncScheduleForm() {
+  const mode = $('#schedule-mode').value;
+  $('#schedule-date').hidden = mode !== 'once';
+  $('#schedule-date').required = mode === 'once';
+  $('#schedule-weekdays').hidden = mode !== 'weekly';
+  $('#schedule-hint').textContent = state.window && state.window.enabled
+    ? '定时任务决定什么时候入队；真正开跑还要看执行窗口 —— 落在窗口外的会排队等到窗口开。'
+    : '';
+}
+
 /** 路由形如 #/task/<id> 或 #/task/<id>/diff，便于分享链接和刷新后回到原处。 */
-function parseHash() {
-  const m = /^#\/task\/([A-Za-z0-9]+)(?:\/(chat|diff|output))?$/.exec(location.hash || '');
+function parseHash() {  const m = /^#\/task\/([A-Za-z0-9]+)(?:\/(chat|diff|output))?$/.exec(location.hash || '');
   return m ? { taskId: m[1], tab: m[2] || 'chat' } : null;
 }
 
@@ -296,6 +583,7 @@ async function doApprove() {
     state.task = await api(`/api/tasks/${state.task.id}/approve`, { method: 'POST' });
     renderDetail();
     await loadTasks();
+    await loadSchedules();    // 「上一轮还没审」的提示该消失了
     refreshFilesIfVisible();  // 主干刚往前走了，树上的东西变了
     toast('已合并到主干');
   } catch (err) {
@@ -309,6 +597,7 @@ async function doDiscard() {
     state.task = await api(`/api/tasks/${state.task.id}/discard`, { method: 'POST' });
     renderDetail();
     await loadTasks();
+    await loadSchedules();
     refreshFilesIfVisible();
     toast('已丢弃');
   } catch (err) {
@@ -922,6 +1211,31 @@ function init() {
     tag.style.color = bytes > ctxData.pointer_soft_limit ? 'var(--del-fg)' : '';
   });
 
+  // ---- 定时任务 ----
+  $('#schedule-new').addEventListener('click', () => {
+    const form = $('#schedule-form');
+    form.hidden = !form.hidden;
+    if (!form.hidden) {
+      syncScheduleForm();
+      form.querySelector('textarea').focus();
+    }
+  });
+  $('#schedule-cancel').addEventListener('click', () => { $('#schedule-form').hidden = true; });
+  $('#schedule-mode').addEventListener('change', syncScheduleForm);
+  $('#schedule-form').addEventListener('submit', (e) => { e.preventDefault(); createSchedule(e.target); });
+
+  // ---- 窗口状态 ----
+  // 横幅上写着「还有 3 小时开启」，不刷新就成了假信息。
+  // 顺带把定时任务也刷一遍 —— 批准之后「上一轮还没审」的提示要跟着消失。
+  setInterval(async () => {
+    try {
+      state.window = await api('/api/window');
+      renderWindow();
+      renderTasks();
+      await loadSchedules();
+    } catch (_) { /* 断线了就别管，连接状态那边会提示 */ }
+  }, 30000);
+
   // 任务提交表单挂在详情面板上方（动态建，避免 HTML 里重复一份）
   const form = el('form', { class: 'inline-form', id: 'task-form' },
     el('textarea', { name: 'title', rows: '2', placeholder: '描述要做的事，比如：给 stats.py 加一个 mode 函数', required: true }),
@@ -939,7 +1253,8 @@ function init() {
   form.addEventListener('submit', (e) => { e.preventDefault(); submitTask(e.target); });
   $('#tasks').after(form);
 
-  loadProjects().then(() => {
+  // 窗口状态要先拿到 —— 任务列表要靠它标出「等窗口」的那些
+  loadWindow().catch(() => {}).then(() => loadProjects()).then(() => {
     const route = parseHash();
     if (route) {
       openTask(route.taskId, route.tab);

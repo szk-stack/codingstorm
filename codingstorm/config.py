@@ -15,10 +15,35 @@ class ServerConfig(BaseModel):
     port: int = 8787
 
 
+class WindowConfig(BaseModel):
+    """执行窗口 —— 只在指定时段启动新任务。
+
+    动机是**谷时定价**：DeepSeek 之类的中转在凌晨有大幅折扣，白天提交、夜里跑
+    比立刻跑便宜得多。它只拦新任务的启动，**不打断已经跑起来的**（中途 kill 掉的
+    钱不会退，重跑还要再花一遍）。
+
+    注意它和「定时任务」是两件事：定时任务决定**什么时候入队**，窗口决定
+    **什么时候能开始执行**。设成「每天 9 点」的定时任务，配上 00:30–08:30 的窗口，
+    入队后要等到第二天凌晨才真正开跑。
+    """
+
+    # 默认关 —— 不能因为升了个版本就让所有人的任务突然开始排队等窗口
+    enabled: bool = False
+    # 必须显式写时区。系统时区可能是 UTC，而用户说的「凌晨」指的是自己那边的凌晨。
+    timezone: str = "Asia/Shanghai"
+    # 支持多段；start > end 表示跨天（22:00–06:00）
+    windows: list[list[str]] = Field(default_factory=lambda: [["00:30", "08:30"]])
+
+
 class SchedulerConfig(BaseModel):
     # 默认 2 —— 执行机可用内存有限，每个 Claude Code 进程约 200-400MB
     max_concurrent: int = Field(default=2, ge=1, le=8)
     poll_interval_s: float = Field(default=1.0, gt=0)
+    # 定时任务迟到多久还算「准时」。
+    # 轮询是一秒一次，正常不会晚；只有平台重启/停机才会迟到。宽限期内的补跑一次，
+    # 超过就跳过（一次性任务标记为「已错过」留在列表里，不静默消失）。
+    misfire_grace_s: int = Field(default=600, ge=0)
+    window: WindowConfig = Field(default_factory=WindowConfig)
 
 
 class TaskConfig(BaseModel):

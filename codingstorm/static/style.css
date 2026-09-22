@@ -297,6 +297,66 @@ tr.del td.code { background: var(--del-bg); color: var(--del-fg); }
 tr.note td.code { color: var(--muted); font-style: italic; }
 .diff-note { padding: 4px 10px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
 
+/* ---------- 执行窗口横幅 ---------- */
+
+.banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin-bottom: 16px;
+  padding: 9px 14px;
+  border: 1px solid #bfdbfe;
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: #eff6ff;
+  font-size: 12.5px;
+}
+.banner.warn { background: #fef3c7; border-color: #fcd34d; border-left-color: #b45309; }
+.banner-text { flex: 1; overflow-wrap: anywhere; }
+.banner button { padding: 4px 10px; font-size: 12px; }
+.banner.warn .muted { color: #92400e; }
+.banner .proj-window {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding-left: 10px;
+  border-left: 1px solid #bfdbfe;
+  color: var(--muted);
+}
+.banner.warn .proj-window { border-left-color: #fcd34d; }
+.banner select { padding: 3px 6px; font-size: 12px; }
+
+/* ---------- 定时任务 ---------- */
+
+.schedules li.schedule {
+  display: block;
+  cursor: default;
+  padding: 10px;
+  border-color: var(--border);
+  margin-bottom: 8px;
+}
+.schedules li.schedule:hover { background: var(--panel); }
+.schedule-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.schedule-head .rule { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.schedule-head .title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.schedule .row { margin-top: 8px; flex-wrap: wrap; }
+.schedule button { padding: 4px 9px; font-size: 12px; }
+
+.small { font-size: 11.5px; }
+.warn { color: #92400e; }
+
+.weekdays { display: inline-flex; align-items: center; gap: 7px; }
+.weekdays label {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.weekdays input[type="checkbox"] { padding: 0; margin: 0; }
+
 /* ---------- 提示 ---------- */
 
 .toast {

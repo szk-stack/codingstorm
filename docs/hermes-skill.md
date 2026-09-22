@@ -1,6 +1,6 @@
 ---
 name: codingstorm
-description: 把编码任务投递到 codingstorm 队列，由服务器上的 Claude Code 异步执行。当用户说「提交任务」「入队」「让 AI 改这个」「看看任务跑完没」「批准/丢弃那个改动」时使用。
+description: 把编码任务投递到 codingstorm 队列，由服务器上的 Claude Code 异步执行。当用户说「提交任务」「入队」「让 AI 改这个」「看看任务跑完没」「批准/丢弃那个改动」「每天/每周定点跑一次」时使用。
 version: 1.0.0
 metadata:
   hermes:
@@ -30,6 +30,17 @@ cs approve <任务id>                # 批准并合入主干
 cs discard <任务id>                # 丢弃
 cs requeue <任务id>                # 重新入队（失败后重试）
 cs usage                           # 用量与成本
+
+cs schedule ls                     # 有哪些定时任务
+cs schedule add <项目> "<标题>" --daily 09:00
+cs schedule add <项目> "<标题>" --weekly 03:00 --days mon,wed
+cs schedule add <项目> "<标题>" --at "2026-12-01 02:00"
+cs schedule run <id>               # 立刻跑一次（不影响原定排期）
+cs schedule pause|resume <id>      # 停用 / 启用
+cs schedule rm <id>                # 删除（已生成的任务留着）
+
+cs window                          # 执行窗口现在开没开
+cs window off | on                 # 临时关闭 / 恢复窗口限制
 ```
 
 任务 id 支持唯一前缀，不用打全。
@@ -47,6 +58,14 @@ cs usage                           # 用量与成本
 
 **批准是不可逆的**（会合入主干）。除非用户明确说批准，否则只做查看。
 
+**定时任务和「现在提交」不是一回事。** 用户说「每天早上跑一次 X」「以后每周三整理变更记录」时，
+用 `cs schedule add` 建一条定时任务，**不要**用 `cs submit` 立刻提交。反过来，
+用户说「现在就做」时才用 `cs submit`。
+
+**平台可能配了执行窗口**（比如只在凌晨跑，谷时便宜）。`cs submit` / `cs schedule run`
+的输出里如果提示「执行窗口现在关着」，把这句话转达给用户，并告诉他急事可以
+`cs window off` 临时关掉窗口 —— 但**这要用户明确要求才做**，它会立刻按全价开始跑。
+
 ## 典型对话
 
 - 「让 AI 给 stats.py 加个 mode 函数」
@@ -59,6 +78,13 @@ cs usage                           # 用量与成本
 
 - 「批准它」
   → `cs approve <id>`
+
+- 「以后每天早上九点跑一遍文档里的命令」
+  → `cs schedule add demo "跑一遍文档里的命令，把失效的改掉" --daily 09:00`
+  → 回：「已建立，下一次 09-23 09:00。跑出来的改动还是等你审」
+
+- 「现在就在手机上让它跑」
+  → 先 `cs submit`；如果提示要等窗口，问用户要不要 `cs window off`
 
 ## 注意
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -21,6 +22,10 @@ from codingstorm.models import (
     ModelUsage,
     ProjectCreate,
     ProjectOut,
+    ProjectWindowIn,
+    ScheduleCreate,
+    ScheduleOut,
+    ScheduleUpdate,
     TaskCreate,
     TaskMessageIn,
     TaskMessageOut,
@@ -29,8 +34,19 @@ from codingstorm.models import (
     TextPayload,
     TreeOut,
     UsageOut,
+    WindowOut,
+    WindowToggle,
 )
 from codingstorm.store import Store
+from codingstorm.timing import (
+    Rule,
+    TimingError,
+    WindowOverride,
+    first_occurrence,
+    iso_utc,
+    parse_rule,
+    parse_windows,
+)
 from codingstorm.workspace import RebaseConflict, RepoError, Workspace, prepare_repo
 
 router = APIRouter(prefix="/api")
@@ -367,6 +383,157 @@ async def get_usage(request: Request, project_id: str | None = None) -> UsageOut
         prices_configured=prices.configured,
         note=note,
     )
+
+
+# ---------- 定时任务 ----------
+
+
+def _scheduler(request: Request):
+    return request.app.state.scheduler
+
+
+def _plan_rule(request: Request, raw) -> tuple[Rule, datetime]:
+    """算出规则对象和它的下一次触发时刻。规则不合法一律 400。
+
+    `raw` 既接受输入模型（新建/改规则），也接受库里存着的 JSON 串（重新启用）。
+    「一次性任务的时间已经过去」也归在这个 400 里 —— 刚打完命令，值得当场知道，
+    而不是等到发现它永远不触发。
+    """
+    tz = _scheduler(request).timezone
+    try:
+        rule = parse_rule(raw.model_dump() if hasattr(raw, "model_dump") else raw)
+        return rule, first_occurrence(rule, datetime.now(tz), tz)
+    except TimingError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/schedules", response_model=list[ScheduleOut])
+async def list_schedules(request: Request, project_id: str | None = None) -> list[ScheduleOut]:
+    return await _store(request).list_schedules(project_id=project_id)
+
+
+@router.post("/projects/{project_id}/schedules", response_model=ScheduleOut, status_code=201)
+async def create_schedule(
+    request: Request, project_id: str, spec: ScheduleCreate
+) -> ScheduleOut:
+    store = _store(request)
+    await _require_project(request, project_id)
+    rule, moment = _plan_rule(request, spec.rule)
+    return await store.create_schedule(
+        project_id, spec, rule_json=rule.as_json(), next_run_at=iso_utc(moment)
+    )
+
+
+@router.get("/schedules/{schedule_id}", response_model=ScheduleOut)
+async def get_schedule(request: Request, schedule_id: str) -> ScheduleOut:
+    schedule = await _store(request).get_schedule(schedule_id)
+    if schedule is None:
+        raise HTTPException(404, "定时任务不存在")
+    return schedule
+
+
+async def _require_schedule(request: Request, schedule_id: str) -> ScheduleOut:
+    schedule = await _store(request).get_schedule(schedule_id)
+    if schedule is None:
+        raise HTTPException(404, "定时任务不存在")
+    return schedule
+
+
+@router.patch("/schedules/{schedule_id}", response_model=ScheduleOut)
+async def update_schedule(
+    request: Request, schedule_id: str, spec: ScheduleUpdate
+) -> ScheduleOut:
+    store = _store(request)
+    schedule = await _require_schedule(request, schedule_id)
+
+    fields: dict = {}
+    if spec.title is not None:
+        fields["title"] = spec.title
+    if spec.body is not None:
+        fields["body"] = spec.body
+    if spec.priority is not None:
+        fields["priority"] = spec.priority
+    if spec.rule is not None:
+        rule, moment = _plan_rule(request, spec.rule)
+        fields["rule"] = rule.as_json()
+        fields["next_run_at"] = iso_utc(moment)
+        # 换规则等于重新排期，之前「错过」的标记就不再适用了
+        fields["missed_at"] = None
+    if spec.enabled is not None:
+        fields["enabled"] = 1 if spec.enabled else 0
+        # 停用时不保留 next_run_at，重新启用时重算 —— 否则停用一周再启用会立刻炸出一堆
+        if spec.enabled and schedule.next_run_at is None:
+            _, moment = _plan_rule(request, schedule.rule)
+            fields["next_run_at"] = iso_utc(moment)
+            fields["missed_at"] = None
+        elif not spec.enabled:
+            fields["next_run_at"] = None
+
+    await store.update_schedule(schedule_id, **fields)
+    return await _require_schedule(request, schedule_id)
+
+
+@router.delete("/schedules/{schedule_id}", status_code=204)
+async def delete_schedule(request: Request, schedule_id: str) -> None:
+    """只删定时任务本身。**它已经生成的任务不动** —— 那些是独立的产物，
+    有的可能还在待审，跟着一起消失才是真的丢东西。"""
+    await _require_schedule(request, schedule_id)
+    await _store(request).delete_schedule(schedule_id)
+
+
+@router.post("/schedules/{schedule_id}/run", response_model=TaskOut, status_code=201)
+async def run_schedule_now(request: Request, schedule_id: str) -> TaskOut:
+    """立刻生成一条任务。不动原定排期，也不占「自动触发次数」。"""
+    store = _store(request)
+    schedule = await _require_schedule(request, schedule_id)
+    return await store.run_schedule_now(
+        schedule,
+        TaskCreate(
+            title=schedule.title,
+            body=schedule.body,
+            kind=schedule.kind,
+            priority=schedule.priority,
+        ),
+    )
+
+
+# ---------- 执行窗口 ----------
+
+
+@router.get("/window", response_model=WindowOut)
+async def get_window(request: Request) -> WindowOut:
+    return _scheduler(request).window_state()
+
+
+@router.post("/window", response_model=WindowOut)
+async def set_window(request: Request, spec: WindowToggle) -> WindowOut:
+    """临时关掉/恢复窗口限制。
+
+    **只存在内存里**：重启就恢复。这是刻意的 —— 急了关一次，忘了也不会一直烧钱。
+    """
+    return _scheduler(request).set_window_disabled(spec.disabled)
+
+
+@router.put("/projects/{project_id}/window", response_model=ProjectOut)
+async def set_project_window(
+    request: Request, project_id: str, spec: ProjectWindowIn
+) -> ProjectOut:
+    """给单个项目配窗口例外（比如「这个项目白天也允许跑」）。"""
+    store = _store(request)
+    await _require_project(request, project_id)
+    if spec.mode == "inherit":
+        override = None
+    elif spec.mode == "always":
+        override = WindowOverride("always").as_json()
+    else:
+        if not spec.windows:
+            raise HTTPException(400, "custom 模式要给出至少一段窗口")
+        try:
+            windows = parse_windows(spec.windows)
+        except TimingError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        override = WindowOverride("custom", tuple(windows)).as_json()
+    return await store.set_project_window(project_id, override)
 
 
 # ---------- 文件浏览 ----------

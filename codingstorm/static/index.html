@@ -86,12 +86,55 @@
   </aside>
 
   <section class="content">
+    <div class="banner" id="window-banner" hidden></div>
+
     <div class="panel" id="queue-panel">
       <div class="panel-head">
         <h2 id="queue-title">任务队列</h2>
         <span id="queue-count" class="muted"></span>
       </div>
       <ul id="tasks" class="list tasks"></ul>
+    </div>
+
+    <div class="panel" id="schedule-panel">
+      <div class="panel-head">
+        <h2>定时任务</h2>
+        <span id="schedule-count" class="muted"></span>
+        <button id="schedule-new" class="ghost">新建</button>
+      </div>
+      <ul id="schedules" class="list schedules"></ul>
+
+      <form id="schedule-form" class="inline-form" hidden>
+        <textarea name="title" rows="2" required
+          placeholder="到点要做什么，比如：跑一遍文档里的命令，把失效的改掉"></textarea>
+        <div class="row">
+          <select name="mode" id="schedule-mode">
+            <option value="daily">每天</option>
+            <option value="weekly">每周</option>
+            <option value="once">一次性</option>
+          </select>
+          <input name="time" type="time" value="09:00" title="触发时刻">
+          <input name="date" id="schedule-date" type="date" title="哪一天" hidden>
+          <span class="weekdays" id="schedule-weekdays" hidden>
+            <label><input type="checkbox" value="mon">一</label>
+            <label><input type="checkbox" value="tue">二</label>
+            <label><input type="checkbox" value="wed">三</label>
+            <label><input type="checkbox" value="thu">四</label>
+            <label><input type="checkbox" value="fri">五</label>
+            <label><input type="checkbox" value="sat">六</label>
+            <label><input type="checkbox" value="sun">日</label>
+          </span>
+          <select name="kind">
+            <option value="task">其他</option>
+            <option value="requirement">需求</option>
+            <option value="instruction">指令</option>
+            <option value="bug">缺陷</option>
+          </select>
+          <button type="submit">建立</button>
+          <button type="button" id="schedule-cancel" class="ghost">取消</button>
+        </div>
+        <div class="hint" id="schedule-hint"></div>
+      </form>
     </div>
 
     <div class="panel" id="file-panel" hidden>

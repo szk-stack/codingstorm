@@ -19,6 +19,13 @@
 5. **上下文**：三层文档机制（指针图 / 文档索引 / 自动沉淀），不做 RAG
 6. **仓库归属**：服务器上的克隆由 codingstorm 独占，用户本地开发、通过 git remote 同步
 
+2026-09-22 追加（用户确认）：
+
+7. **执行窗口**：全局默认时段 + **项目级可覆盖**；只在窗口内启动新任务，不打断运行中的；
+   紧急绕过是**内存态**的全局临时开关（重启即恢复）
+8. **定时任务**：规则只有「一次性 / 每天 / 每周几」；**每次触发新建一条任务**；
+   错过就跳过（不补跑）；产出**一律人工审**，不做自动批准
+
 ---
 
 ## 3. 技术契约（已核实）
@@ -123,11 +130,12 @@ codingstorm/
   pyproject.toml
   codingstorm/
     config.py      配置加载（TOML）
-    db.py          SQLite schema、连接管理、单写线程
+    db.py          SQLite schema、连接管理、单写线程、轻量迁移
     models.py      pydantic 模型
+    timing.py      执行窗口与定时规则的时间计算（纯函数，不碰 DB）
     git_ops.py     worktree / rebase / update-ref / diff / 对账
     runner.py      子进程管理 + NDJSON 解析 + 日志 tail
-    scheduler.py   每项目串行队列 + 全局并发上限 + 看门狗
+    scheduler.py   每项目串行队列 + 全局并发上限 + 执行窗口 + 定时触发 + 看门狗
     context.py     三层上下文组装与沉淀
     api.py         FastAPI 路由 + WebSocket
     app.py         入口 + lifespan（收尾与对账）
@@ -143,7 +151,8 @@ codingstorm/
 
 ```sql
 projects(id, name, repo_path, target_branch, worktree_root, context_dir,
-         max_concurrency, max_turns, wall_clock_timeout_s, created_at, enabled)
+         max_concurrency, max_turns, wall_clock_timeout_s, created_at, enabled,
+         window_override)                          -- JSON；NULL = 继承全局窗口
 
 tasks(id, project_id, title, body, kind,        -- kind: requirement|instruction|bug
       status, priority,
@@ -153,7 +162,16 @@ tasks(id, project_id, title, body, kind,        -- kind: requirement|instruction
       prompt_snapshot,                           -- 或 hash + 上下文文件版本
       permission_denials,                        -- 边界拦截审计
       last_event_at,                             -- 心跳，看门狗用
+      schedule_id,                               -- 由哪条定时任务生成；手工提交为 NULL
       created_at, started_at, finished_at)
+
+-- 定时任务。每次触发生成一条新 tasks 行，不复用
+schedules(id, project_id, title, body, kind, priority,
+          rule,                                    -- JSON：once / daily / weekly
+          next_run_at,                             -- UTC；NULL = 不再触发
+          enabled, last_run_at, last_task_id, run_count,
+          missed_at,                               -- 一次性任务错过了时刻
+          created_at)
 
 attempts(id, task_id, attempt_no, session_id, pid, pid_starttime, model,
          exit_code, result_subtype, is_error, error_text, duration_ms, num_turns,
@@ -319,6 +337,48 @@ while True:
 - **丢弃**：`git worktree remove` + `git branch -D` → `discarded`
 - 冲突 → 标为需要人工处理并列出冲突文件（**v1 不做 AI 自动解冲突**）
 
+### 6.4 定时触发与执行窗口
+
+**这是两件事，不是一件**，混在一起会想错：
+
+| | 决定 | 落点 |
+|---|---|---|
+| 定时任务 | 什么时候**入队** | `schedules` 表 + 调度循环里的 `_fire_due_schedules` |
+| 执行窗口 | 什么时候**能开始执行** | `claim_next(allowed_projects=…)` 的参数 |
+
+所以「每天 9 点」配上 00:30–08:30 的窗口，任务 9:00 入队、次日凌晨才开跑。这个组合是
+刻意的：省钱优先。界面上必须把「等窗口」标出来，否则用户会以为卡死了。
+
+**执行窗口**
+
+- 纯时间计算全在 `timing.py`（不碰 DB、不读配置），因为时区差 8 小时、跨天窗口差一天、
+  闭开区间这类错误在集成测试里极难重现，在纯函数里是几行断言
+- 窗口**只拦新任务的启动，不打断已经跑起来的**：中途 kill 掉的钱不会退，重跑还要再花一遍
+- 全局一套 + 项目级覆盖（`always` / `custom`），覆盖值坏掉时**降级成继承全局** ——
+  一列脏数据不该让调度器停摆，更不该变成全天放开一直烧钱
+- 紧急绕过是**内存态**的全局开关（`cs window off`）：重启即恢复。刻意的失败方向 ——
+  宁愿重新关一次，也不愿忘了恢复之后一直按全价烧钱
+- 时间判断放在 Python 而不是 SQL：跨零点、多段、项目级覆盖，在 Python 里是几行，
+  写进 SQL 是一团。窗口开着时直接返回 `None`（不限制），省掉每秒一次的项目查询
+
+**定时任务**
+
+- 三种规则：`once` / `daily` / `weekly`，不引 croniter。规则存 JSON，
+  `once` 存的是**用户时区的本地时刻**（存绝对值的话，改时区配置就等于把已排好的任务全挪了位置）
+- **每次触发生成一条新任务**，不复用 —— 一条任务对应一个分支、一个工作区、一份待审 diff
+- **触发和推进 `next_run_at` 必须同事务**：崩在中间要么这次触发凭空消失、要么重启后重复建一条。
+  用「比对读取时的 `next_run_at`」当乐观锁，和 `claim_next` 一个套路
+- `next_occurrence` **总是从当前时刻往后算**，不做 `上次 + 间隔` 的追赶。
+  否则平台停机三天，开机时会一口气补跑三条
+- 迟到在 `misfire_grace_s`（默认 10 分钟）内算准时 —— 轮询是一秒一次，只有重启才会迟到，
+  迟到几分钟不该算错过。超过宽限期：一次性任务停下并标 `missed_at`（留在列表里，不静默消失），
+  周期任务直接跳到下一次
+- 规则坏掉（比如库里被写进非 JSON）只停用这一条并记日志，**不能让整个调度循环挂掉**
+
+> ⚠️ `timing.parse_rule` 必须把 `json.JSONDecodeError` 归一成 `TimingError`。
+> 前者虽然也是 `ValueError`，但不是 `TimingError`，调度器只接后者 ——
+> 漏出去就会被当成「未知异常」反复重试同一条坏规则。（这个坑是测试抓出来的。）
+
 ---
 
 ## 7. 上下文三层
@@ -481,6 +541,45 @@ HTTP API —— 给它一个 CLI 加上一份技能说明就够了，不用去�
 
 `cs` 本身也独立有用：脚本、cron、SSH 里都能提交和查看任务，不必开浏览器。
 
+
+### Phase 7 · 定时任务与执行窗口 ✅ 已完成（2026-09-22）
+
+**动机是谷时定价**：中转服务凌晨常有大幅折扣，白天提交、夜里跑便宜得多。顺带做上「到点自动
+提交」，两件事共用同一套时间计算。
+
+- `timing.py`：窗口解析与判断（跨天、多段）、三种定时规则的 `next_occurrence`、
+  UTC 时间串的格式化。**纯函数，27 项测试**
+- 执行窗口：`[scheduler.window]`（enabled / timezone / windows）+ 项目级覆盖 +
+  内存态全局临时开关。只拦新任务启动，不打断运行中的
+- 定时任务：`schedules` 表 + CRUD API + `cs schedule` + 界面面板。触发走一个事务，
+  乐观锁防重复
+- 界面：窗口横幅（含临时关闭、项目例外下拉）、定时任务面板、任务列表标「等窗口」
+- 数据库迁移：`db._migrate` 用 `PRAGMA table_info` + `ALTER TABLE` 补后加的列 ——
+  `CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做，升级老库只能这么办
+
+**刻意没做**（都写进了 README 的「已知限制」）：
+
+- **不做分时段计价**。只在谷时跑的话，价目表直接填谷时单价即可。真按每次 API 请求的时间戳
+  分桶算，而任务常横跨折扣边界（08:25 启动跑到 09:30），成本极高、收益极低
+- **不做完整 cron**，也不做「每隔 N 分钟」的间隔触发。前者要引依赖且界面难读，
+  后者和「未合并改动对后续任务不可见」的模型冲突更明显
+- **不做自动批准**。周期任务产生的仍是待审 diff，界面上标出「上一轮还没审，
+  本轮会切在旧主干上」，但不阻塞
+
+测试从 171 涨到 262 项。新增部分覆盖：窗口的跨天与闭开区间、项目级覆盖的降级、
+错过与宽限期、触发的事务性与幂等、规则的时区换算、CLI 解析器、HTTP 接口。
+
+**实测暴露的问题：**
+
+1. **`build_parser` 里复用了变量名 `p`** —— 最后 `return p` 返回的是 `window` 子解析器，
+   所有命令都变成「window 的参数错误」。CLI 冒烟测试一眼就撞上了，补了解析器回归测试
+2. **`json.JSONDecodeError` 不是 `TimingError`** —— 库里被写进非 JSON 规则时，
+   调度器接不住，坏规则会被反复重试。修在 `parse_rule` 里做归一
+3. **测试夹具的默认值让窗口「时灵时不灵」** —— 默认启用了 00:30–08:30，
+   测试结果取决于跑测试时的钟点。这种测试比没有还糟，改成「不传 windows 就不启用窗口」
+
+**部署验证**：真实进程里，一次性定时任务于 23:40:00.730 自动入队，
+任务因窗口未开而停在队列（`排队中`），CLI 与界面都如实标出「等窗口」。**
 
 **Phase 0–3 是能解决痛点的最小闭环**，4–6 依次叠加。
 

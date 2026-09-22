@@ -18,6 +18,8 @@ git worktree 里执行，跑完等你审 diff —— 把「等 AI 跑完才能�
   不同项目可以并行，总并发由 `scheduler.max_concurrent` 控制。
 - 每个任务从**最近一次已合并的主干**切出分支 `cs/<任务id>-<标题>`，批准即快进合入。
 - 队列不阻塞，但**未批准的上游改动对后续任务不可见** —— 想让下一个任务看到，先批准。
+- 任务可以**定时入队**（`cs schedule`），也可以限制**只在某个时段执行**（谷时省钱，
+  见[定时任务与执行窗口](#定时任务与执行窗口)）。
 
 ## 快速开始
 
@@ -66,6 +68,8 @@ cp codingstorm.example.toml codingstorm.toml
 | `task.idle_timeout_s` | `300` | 多久没有任何输出就判定卡死 |
 | `context.sediment` | `true` | 任务结束后自动写变更记录（会多一次模型调用） |
 | `claude.guard_block_push` | `true` | 拦 `git push` 与改 remote |
+| `scheduler.window.enabled` | `false` | 只在指定时段跑任务（谷时省钱），见下 |
+| `scheduler.misfire_grace_s` | `600` | 定时任务迟到多久还算「准时」 |
 
 每项在 `codingstorm.example.toml` 里都有注释说明为什么这么设。
 
@@ -155,6 +159,18 @@ cs approve <任务id>            # 批准并合入主干
 cs discard <任务id>            # 丢弃
 cs requeue <任务id>            # 重新入队
 cs usage                       # 用量与成本
+
+cs schedule ls [--project <名>]                # 有哪些定时任务
+cs schedule add <项目> "<标题>" --daily 09:00
+cs schedule add <项目> "<标题>" --weekly 03:00 --days mon,wed
+cs schedule add <项目> "<标题>" --at "2026-12-01 02:00"
+cs schedule run <id>           # 立刻跑一次（不影响原定排期）
+cs schedule pause|resume <id>  # 停用 / 启用
+cs schedule rm <id>            # 删除（已生成的任务留着）
+
+cs window                      # 执行窗口现在开没开
+cs window off | on             # 临时关闭 / 恢复窗口限制
+cs window --project <名> always|inherit|custom --windows "09:00-18:00"
 ```
 
 - **任务 id 支持唯一前缀**，打前几位就够；前缀匹配到多条会提示写长一点。项目参数同样接受名字或 id。
@@ -213,11 +229,64 @@ cs say <任务id> "再加个单元测试"
 > 如果接会话时没把它排掉，多轮对话会看起来「能答上来」—— 因为沉淀那次的 prompt 里
 > 也有任务标题和 diff —— 实际上完全没接在任务历史上。代码里按 `origin='task'` 过滤掉了。
 
+## 定时任务与执行窗口
+
+这两件事经常被当成一件，其实是两件：
+
+| | 决定什么 | 配在哪 |
+|---|---|---|
+| **定时任务** | 什么时候**入队** | 界面右栏「定时任务」面板，或 `cs schedule` |
+| **执行窗口** | 什么时候**能开始执行** | `codingstorm.toml` 的 `[scheduler.window]` |
+
+所以「每天 9 点」的定时任务配上 00:30–08:30 的窗口，入队后要等到第二天凌晨才真正开跑 ——
+这不是 bug，是省钱优先的必然结果。界面上会把这类任务标成「等窗口」。
+
+### 执行窗口（谷时省钱）
+
+中转服务的凌晨时段常有大幅折扣，白天提交、夜里跑便宜得多。
+
+```toml
+[scheduler.window]
+enabled  = true
+timezone = "Asia/Shanghai"        # 必须显式写，别靠系统时区
+windows  = [["00:30", "08:30"]]   # 可配多段；start > end 表示跨天，如 22:00-06:00
+```
+
+- **只拦新任务的启动，不打断已经跑起来的。** 中途 kill 掉的钱不会退，重跑还要再花一遍。
+- 窗口外排队中的任务，界面和 `cs ls` 都会标出来，免得看着像卡死了。
+- **急事**：界面上横幅右边有「临时关闭窗口」，或者 `cs window off`。
+  这是内存态开关，**平台重启就恢复** —— 急了关一次，忘了也不会一直烧钱。
+- **单个项目可以例外**：横幅右边直接选，或者 `cs window --project <名> always`。
+
+### 定时任务
+
+三种规则，都不需要学 cron 表达式：
+
+```bash
+cs schedule add demo "每天跑一遍文档里的命令，把失效的改掉" --daily 09:00
+cs schedule add demo "每周整理一次变更记录" --weekly 03:00 --days mon,wed
+cs schedule add demo "一次性迁移" --at "2026-12-01 02:00"
+```
+
+- **每次触发是生成一条新任务**，不是复用同一条。一条任务对应一个分支、一个工作区、一份待审
+  diff，复用会把这套模型直接搞乱。
+- **错过就跳过，一律不补跑。** 轮询是一秒一次，只有平台停机才会迟到；迟到在
+  `misfire_grace_s`（默认 10 分钟）内的算准时，超过就跳过。一次性任务错过会标成
+  「已错过」留在列表里，不静默消失 —— 可以自己重排或点「立即跑一次」。
+- **产出和手工任务一样要人工审。** 所以「上一轮还没审」时界面会标红提醒：
+  未合并的改动对后续任务不可见，本轮会切在旧主干上。
+- 任务和定时任务的对应关系是 `tasks.schedule_id`，任务详情里能追回是哪条定时任务生成的。
+- 删除定时任务**不会删掉它已经生成的任务** —— 那可能是待审的产物，跟着一起消失才是真的丢东西。
+
 ## Web UI
 
 地址就是服务地址。左右两栏：**左栏**是项目列表（带注册表单）和项目上下文编辑区，
-**右栏**上面是任务队列、下面是任务详情。
+**右栏**从上到下是：执行窗口横幅、任务队列、定时任务面板、任务详情。
 
+- **执行窗口横幅**（启用窗口时才有）：显示当前开没开、还有多久开关，右边两个控件 ——
+  临时关闭窗口、以及当前项目的窗口例外。
+- **定时任务面板**：列出当前项目的定时任务，每条能「立即跑一次 / 停用 / 删除 / 看上一轮」。
+  点「新建」展开表单，选每天、每周（勾星期几）或一次性。
 - 任务详情三个页签：**对话**（多轮往返，可继续输入）、**执行过程**（实时推送，工具调用渲染成可展开
   卡片）和**改动**（diff + 批准/丢弃按钮）。
 - **文件**：左栏项目上下文里有个「文件」页签，能直接浏览仓库内容（目录树 + 点开看正文），
@@ -225,6 +294,8 @@ cs say <任务id> "再加个单元测试"
   用提交 sha 定位，所以任务合并之后也还能看。
 - 路由是 hash 形式的 `#/task/<id>`、`#/task/<id>/diff`，链接可分享、刷新回到原处。
 - 实时靠 WebSocket，另有 2 秒轮询兜底（事件可能因队列满被丢弃，状态得有独立通道保证最终一致）。
+  窗口状态另有 30 秒轮询 —— 横幅上写着「还有 3 小时开启」，不刷新就成了假信息。
+- **时间一律按配置的时区显示**，不用浏览器时区。「每天 9 点」指的是配置里那个时区的 9 点。
 - 没有构建步骤，也不依赖任何 CDN。
 
 ## 上下文：让 AI 记住项目约定
@@ -290,7 +361,7 @@ cp prices.example.toml ~/codingstorm/prices.toml
 启动后 `{root}` 下会有：
 
 ```
-codingstorm.db      SQLite（WAL）。项目、任务、尝试、事件
+codingstorm.db      SQLite（WAL）。项目、任务、尝试、事件、定时任务
 contexts/<项目>/    pointer.md / journal.md / docs/（含 INDEX.md）
 worktrees/<项目>/   每个任务一个临时工作区，批准或丢弃后清掉
 logs/<项目>/<任务id>.ndjson   原始事件流（排错时看这个）
@@ -330,6 +401,15 @@ repos/              被调度的仓库。注册时留空 repo_path 就用这里�
 | PUT | `/api/projects/{id}/context/pointer` | 写指针图 |
 | PUT | `/api/projects/{id}/context/index` | 写文档索引 |
 | GET / PUT / DELETE | `/api/projects/{id}/context/docs/{路径}` | 读 / 写 / 删一篇文档（PUT 兼作新建） |
+| GET | `/api/schedules` | 列出定时任务（`?project_id=`） |
+| GET / POST | `/api/projects/{id}/schedules` | 列出 / 新建定时任务 |
+| GET / PATCH / DELETE | `/api/schedules/{id}` | 读 / 改（规则、启停、标题）/ 删 |
+| POST | `/api/schedules/{id}/run` | 立刻跑一次（不动原定排期） |
+| GET / POST | `/api/window` | 读窗口状态 / 临时关闭或恢复（`{"disabled": bool}`） |
+| PUT | `/api/projects/{id}/window` | 项目级窗口覆盖（`{"mode": "inherit\|always\|custom", "windows": [...]}`） |
+
+> 规则不合法、一次性任务的时间已经过去，都返回 **400** 并带上原因；
+> `type` 不是 `once/daily/weekly` 是形状问题，由 pydantic 返回 **422**。
 
 ## 部署
 
@@ -352,12 +432,13 @@ repos/              被调度的仓库。注册时留空 repo_path 就用这里�
 
 ```bash
 pip install -e ".[dev]"
-pytest -q          # 174 项
+pytest -q          # 263 项
 ```
 
-代码在 `codingstorm/`：`api.py`（HTTP）、`scheduler.py`（并发与生命周期）、`runner.py`（拉起子进程、
-解析 NDJSON）、`workspace.py`（worktree 与合并）、`context.py`（上下文三层）、`store.py` + `db.py`
-（数据层）、`cli.py`（`cs`）、`static/`（无构建步骤的前端）。
+代码在 `codingstorm/`：`api.py`（HTTP）、`scheduler.py`（并发、执行窗口、定时触发与生命周期）、
+`runner.py`（拉起子进程、解析 NDJSON）、`workspace.py`（worktree 与合并）、`context.py`（上下文三层）、
+`timing.py`（窗口与定时规则的时间计算，纯函数）、`store.py` + `db.py`（数据层）、`cli.py`（`cs`）、
+`static/`（无构建步骤的前端）。
 
 改架构前先读 `docs/architecture.md`，那里记录了已核实的技术契约和压测出来的实现约束 ——
 不少看起来能简化的地方，简了就会踩坑（该文档第 5 节整节都是）。踩过的坑另见 [`docs/pitfalls.md`](docs/pitfalls.md)。
@@ -369,4 +450,12 @@ pytest -q          # 174 项
 - **任务粒度太细不划算。** Claude Code 的固定开销很高（实测一句「OK」约 2.6 万 input token），
   一句话塞多个需求也不会更快 —— 一个任务一次执行。
 - **任务之间看不到彼此未合并的改动**，这是设计的一部分，不是 bug。
+  周期性的定时任务尤其容易踩：人不审，第二天那条仍然基于旧主干 —— 界面上会标出来提醒。
+- **执行窗口的「临时关闭」不持久。** 重启就恢复限制。这是刻意的失败方向：
+  宁愿你重新关一次，也不愿忘了恢复之后一直按全价烧钱。
+- **定时规则只有「一次性 / 每天 / 每周几」**，没有完整 cron 表达式，也不支持
+  「每隔 N 分钟」这类间隔触发。
+- **不做分时段计价。** 只在谷时跑的话，价目表直接填谷时单价即可。真按每次请求的
+  时间戳分桶算，任务又常横跨折扣边界，成本极高、收益极低。
 - 项目一旦注册只能通过数据库改（没有改和删的接口）；`enabled` 字段存在但界面没暴露。
+  例外是窗口覆盖，它走 `PUT /api/projects/{id}/window` 和 `cs window --project`。

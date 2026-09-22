@@ -64,6 +64,13 @@ PROBES = {
     "面包屑": "document.querySelector('#file-crumbs')?.innerText",
     "文件面板可见": "!document.querySelector('#file-panel')?.hidden",
     "文件正文": "document.querySelector('#file-body')?.textContent?.slice(0,200)",
+    "窗口横幅可见": "!document.querySelector('#window-banner')?.hidden",
+    "窗口横幅": "document.querySelector('#window-banner')?.innerText",
+    "定时面板可见": "!document.querySelector('#schedule-panel')?.hidden",
+    "定时任务列表": "document.querySelector('#schedules')?.innerText?.slice(0,600)",
+    "定时任务条数": "document.querySelectorAll('#schedules li.schedule').length",
+    "定时表单可见": "!document.querySelector('#schedule-form')?.hidden",
+    "定时表单提示": "document.querySelector('#schedule-hint')?.textContent",
     "JS 报错": "window.__errors ? window.__errors.join(' | ') : '(无)'",
 }
 

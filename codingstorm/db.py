@@ -29,7 +29,10 @@ CREATE TABLE IF NOT EXISTS projects (
     repo_path     TEXT NOT NULL,
     target_branch TEXT NOT NULL DEFAULT 'main',
     enabled       INTEGER NOT NULL DEFAULT 1,
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    -- 该项目对全局执行窗口的覆盖；NULL = 继承全局。
+    -- 存 JSON：{"mode":"always"} 或 {"mode":"custom","windows":[["09:00","18:00"]]}
+    window_override TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -50,10 +53,33 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at        TEXT NOT NULL,
     started_at        TEXT,
     finished_at       TEXT,
-    error_text        TEXT
+    error_text        TEXT,
+    -- 由哪条定时任务生成；手工提交的任务为 NULL
+    schedule_id       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_queue
     ON tasks (project_id, status, priority DESC, created_at);
+
+-- 定时任务。**每次触发是生成一条新任务，不是复用同一条** ——
+-- 一条任务对应一个分支、一个工作区、一份待审 diff，复用会把这套模型直接搞乱。
+CREATE TABLE IF NOT EXISTS schedules (
+    id           TEXT PRIMARY KEY,
+    project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title        TEXT NOT NULL,
+    body         TEXT NOT NULL DEFAULT '',
+    kind         TEXT NOT NULL DEFAULT 'task',
+    priority     INTEGER NOT NULL DEFAULT 0,
+    rule         TEXT NOT NULL,        -- JSON：{"type":"daily","time":"09:00"}
+    next_run_at  TEXT,                 -- UTC；NULL = 不再触发（已停用或一次性已过）
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    last_run_at  TEXT,
+    last_task_id TEXT,                 -- 上一轮生成的任务，界面据此提示「上轮还没审」
+    run_count    INTEGER NOT NULL DEFAULT 0,
+    -- 一次性任务错过了时刻（平台没在跑）。留在列表里让人看得见，而不是静默消失
+    missed_at    TEXT,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules (enabled, next_run_at);
 
 CREATE TABLE IF NOT EXISTS attempts (
     task_id               TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -105,6 +131,20 @@ CREATE TABLE IF NOT EXISTS task_messages (
 """
 
 _SENTINEL = object()
+
+# 后加的列。`CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做，
+# 所以升级老库只能靠 ALTER。SQLite 的 ADD COLUMN 是纯元数据操作，不重写数据。
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("tasks", "schedule_id", "TEXT"),
+    ("projects", "window_override", "TEXT"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, decl in _ADDED_COLUMNS:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if existing and column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 def _set_result(fut: asyncio.Future, value: Any) -> None:
@@ -203,6 +243,7 @@ class Database:
     def _writer_loop(self) -> None:
         conn = self._make_conn(self.path)
         conn.executescript(SCHEMA)
+        _migrate(conn)
         self._ready.set()
         pending: list[tuple] = []
         last_flush = time.monotonic()
@@ -317,6 +358,26 @@ class Database:
                 raise
 
         await self._submit(run)
+
+    async def transaction(self, fn: Callable[[sqlite3.Connection], Any]) -> Any:
+        """在一个事务里跑多条语句。
+
+        定时任务触发要用：**建任务和推进 `next_run_at` 必须同生共死**，
+        否则崩在中间要么丢一次触发、要么重启后再触发一遍。
+        只有写线程会碰这条连接，所以不需要额外的锁。
+        """
+
+        def run(conn: sqlite3.Connection) -> Any:
+            conn.execute("BEGIN")
+            try:
+                result = fn(conn)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            return result
+
+        return await self._submit(run)
 
     async def query(self, sql: str, params: Sequence[Any] = ()) -> list[sqlite3.Row]:
         return await asyncio.to_thread(self._read, sql, params)

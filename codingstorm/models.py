@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -41,6 +42,31 @@ class ProjectCreate(BaseModel):
     # 留空则用 {root}/repos/<name>.git；不存在就建一个空裸仓库
     repo_path: str = ""
     target_branch: str = "main"
+
+
+class ScheduleRuleIn(BaseModel):
+    """定时规则的输入形状。三种类型共用一个模型，按 type 取用对应字段。"""
+
+    type: Literal["once", "daily", "weekly"]
+    at: str | None = None  # once：「2026-09-23T09:00」，用户时区的本地时刻
+    time: str | None = None  # daily / weekly：「09:00」
+    days: list[str] = Field(default_factory=list)  # weekly：["mon","wed"]
+
+
+class ScheduleCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    body: str = ""
+    kind: TaskKind = TaskKind.TASK
+    priority: int = 0
+    rule: ScheduleRuleIn
+
+
+class ScheduleUpdate(BaseModel):
+    enabled: bool | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    body: str | None = None
+    priority: int | None = None
+    rule: ScheduleRuleIn | None = None
 
 
 class TaskCreate(BaseModel):
@@ -109,6 +135,8 @@ class ProjectOut(BaseModel):
     target_branch: str
     enabled: bool
     created_at: str
+    # NULL = 走全局窗口；见 timing.WindowOverride
+    window_override: str | None = None
 
 
 class TaskOut(BaseModel):
@@ -129,6 +157,58 @@ class TaskOut(BaseModel):
     started_at: str | None = None
     finished_at: str | None = None
     error_text: str | None = None
+    # 由哪条定时任务生成；手工提交的任务为空
+    schedule_id: str | None = None
+
+
+class ScheduleOut(BaseModel):
+    """定时任务。
+
+    `next_run_at` 是 UTC，**显示给用户时要用 `window.timezone` 换算** ——
+    用户配的「每天 9 点」指的是那个时区的 9 点，不是浏览器所在地的 9 点。
+    """
+
+    id: str
+    project_id: str
+    title: str
+    body: str
+    kind: str
+    priority: int
+    rule: str
+    rule_text: str = ""
+    next_run_at: str | None = None
+    enabled: bool
+    last_run_at: str | None = None
+    last_task_id: str | None = None
+    # 上一轮生成的还在待审 —— 界面据此提示「本轮会切在旧主干上」
+    last_task_status: str | None = None
+    run_count: int
+    missed_at: str | None = None
+    created_at: str
+
+
+class WindowOut(BaseModel):
+    """执行窗口的当前状态，给界面画那条横幅用。"""
+
+    enabled: bool  # 配置里启用了窗口
+    disabled: bool  # 被临时关掉了（内存态，重启恢复）
+    open: bool  # 全局此刻是否放行
+    timezone: str
+    windows: list[list[str]]
+    now: str
+    next_open_at: str | None = None
+    next_close_at: str | None = None
+
+
+class WindowToggle(BaseModel):
+    disabled: bool
+
+
+class ProjectWindowIn(BaseModel):
+    """项目对全局执行窗口的覆盖。"""
+
+    mode: Literal["inherit", "always", "custom"] = "inherit"
+    windows: list[list[str]] = Field(default_factory=list)
 
 
 class AttemptOut(BaseModel):

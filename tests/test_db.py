@@ -159,3 +159,53 @@ def test_event_table_is_without_rowid(db: Database):
         assert "WITHOUT ROWID" in (row["sql"] or "")
 
     run(main())
+
+
+def test_老库升级会补上后加的列(tmp_path: Path):
+    """`CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做 —— 升级老库只能靠 ALTER。
+
+    执行机上那个库是 Phase 1 建的，没有 schedule_id / window_override。
+    这里手工造一个老 schema 出来，确认打开之后列都在。
+    """
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE projects (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, repo_path TEXT NOT NULL,
+            target_branch TEXT NOT NULL DEFAULT 'main',
+            enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
+        );
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'task',
+            status TEXT NOT NULL DEFAULT 'queued', priority INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        INSERT INTO projects (id, name, repo_path, created_at)
+        VALUES ('p1', '老项目', '/tmp/r', '2026-01-01T00:00:00.000Z');
+        INSERT INTO tasks (id, project_id, title, created_at)
+        VALUES ('t1', 'p1', '老任务', '2026-01-01T00:00:00.000Z');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    fresh = Database(path)
+    fresh.start()
+    try:
+        async def main():
+            task_cols = {r["name"] for r in await fresh.query("PRAGMA table_info(tasks)")}
+            assert "schedule_id" in task_cols
+            proj_cols = {r["name"] for r in await fresh.query("PRAGMA table_info(projects)")}
+            assert "window_override" in proj_cols
+
+            # 老数据一条没少，而且新表也建出来了
+            rows = await fresh.query("SELECT title FROM tasks WHERE id = 't1'")
+            assert rows[0]["title"] == "老任务"
+            counts = await fresh.query("SELECT COUNT(*) AS c FROM schedules")
+            assert counts[0]["c"] == 0
+
+        run(main())
+    finally:
+        fresh.close()

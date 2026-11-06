@@ -15,8 +15,8 @@ host = "127.0.0.1"
 port = 8788
 
 [scheduler]
-# 全局并发上限。**由内存决定** —— 每个 Claude Code 进程约 200-400MB，
-# 执行机可用内存不大时保持 2 左右，否则会 OOM。
+# 全局并发上限。**由内存决定** —— 每个 Claude Code 进程约 200-400MB；
+# Pi 是 Node 进程，占用不同但同样不轻。执行机可用内存不大时保持 2 左右，否则会 OOM。
 #
 # 项目内永远是串行（硬约束），这个上限只在项目之间起作用。
 max_concurrent = 2
@@ -53,6 +53,8 @@ windows = [["00:30", "08:30"]]
 #     cs window --project <项目> custom --windows "09:00-18:00"
 
 [task]
+# 单个任务的轮数上限。Claude Code 走 --max-turns；Pi 没有这个开关，
+# 平台自己数 turn_end 事件，在下一轮开始前拦下并杀进程组。
 # 不设上限的话，一个死循环 agent 能烧一整晚。
 max_turns = 50
 # 墙钟上限：超过就整组 SIGTERM→SIGKILL。
@@ -88,6 +90,34 @@ max_review_rounds = 6
 # 参考同目录的 prices.example.toml。
 # prices_file = "~/codingstorm/prices.toml"
 
+# ---- 执行器 ----
+# 用哪个 CLI 跑任务：claude = Claude Code（默认，行为与旧版一致）；pi = Pi Coding Agent。
+# 项目可以在注册时覆盖（界面下拉，或 API 的 runtime 字段），同一台机器上可以
+# 一个项目用 Claude Code、另一个用 Pi。
+[runtime]
+default = "claude"
+
+[pi]
+# npm: npm install -g @earendil-works/pi-coding-agent
+# 必须能在跑服务端那台机器的 PATH 里直接找到。
+binary = "pi"
+# 留空 = 用 Pi 自己 settings.json 里的默认模型。
+# 指定时支持 `provider/id` 与 `:thinking` 后缀，例如 "deepseek/deepseek-chat:high"
+# model = ""
+# --provider 必须和 --model 一起用，单独写会在启动时报配置错误
+# provider = ""
+# thinking = "high"          # off|minimal|low|medium|high|xhigh|max
+#
+# 项目信任。无人值守默认 ignore：不加载仓库里的 .pi/settings.json、扩展和技能
+# （它们会以 Pi 进程的权限执行任意代码）。AGENTS.md / CLAUDE.md 不受影响，仍会加载。
+# approve = 信任并加载；inherit = 不传开关，交给 Pi 自己的 defaultProjectTrust。
+project_trust = "ignore"
+# 会话文件目录。留空 = Pi 默认位置（~/.pi/agent/sessions，按工作目录分组）。
+# 多轮对话要靠它找回上一轮的会话，别在任务中途改。
+# session_dir = "~/codingstorm/pi-sessions"
+# 透传参数，给 Pi 升级后新增的开关用（排在平台参数之后、prompt 之前）
+extra_args = []
+
 [claude]
 binary = "claude"
 # 无人值守必须全自动放行；边界靠下面的 hook 拦。
@@ -95,8 +125,10 @@ permission_mode = "bypassPermissions"
 # settings_file 一般不用管 —— 启用 guard 后由程序自动接管（--settings 是合并语义）
 
 # ---- 边界拦截 ----
-# bypassPermissions 会绕过所有权限检查，所以 permissions.deny 不可靠，
-# 只能靠 PreToolUse hook（它不受权限模式影响，Phase 0 已实测）。
+# 规则对两个执行器都生效（历史原因，这些配置项仍挂在 [claude] 下）：
+#   · Claude Code 走 PreToolUse hook（bypassPermissions 会绕过权限检查，
+#     所以 permissions.deny 不可靠，只能靠 hook —— Phase 0 已实测）
+#   · Pi 没有权限系统，走平台生成的 tool_call 扩展（同一个 guard.py 判定）
 guard_enabled = true
 guard_block_push = true
 # 默认关：开了会连带挡掉正常的依赖安装，容易误伤

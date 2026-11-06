@@ -13,11 +13,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import subprocess
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+from codingstorm.agents import make_runtime
 from codingstorm.config import Config
 from codingstorm.context import ContextStore
 from codingstorm.models import TaskOut
@@ -89,26 +91,17 @@ async def run_sediment(
     prompt: str,
     *,
     session_id: str,
+    runtime: str | None = None,
 ) -> SedimentResult:
-    """跑一次只出文本、不用工具的调用。"""
-    cmd = [
-        config.claude.binary,
-        "-p",
-        prompt,
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--session-id",
-        session_id,
-        # 只出文本，不给它任何动手机会
-        "--max-turns",
-        "1",
-        "--disallowed-tools",
-        "AskUserQuestion",
-    ]
-    if config.claude.settings_file is not None:
-        cmd += ["--settings", str(config.claude.settings_file)]
+    """跑一次只出文本、不用工具的调用。
 
+    和任务执行走同一套执行器选择：项目用 Pi，沉淀也用 Pi；否则只装了 Pi 的机器
+    会在每个任务后面追加一条「沉淀失败」。
+    """
+    impl = make_runtime(config, runtime or config.runtime.default)
+    cmd = impl.build_oneshot_command(prompt, session_id=session_id, cwd=workspace_path)
+
+    started = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(workspace_path),
@@ -123,8 +116,19 @@ async def run_sediment(
         proc.kill()
         return SedimentResult(text=None, error="沉淀调用超时")
 
+    duration_ms = int((time.monotonic() - started) * 1000)
+    stdout = out.decode("utf-8", "replace")
+    stderr = err.decode("utf-8", "replace")
+    if impl.name == "pi":
+        return _parse_pi(stdout, stderr, proc.returncode, duration_ms)
+    return _parse_claude(stdout, stderr, proc.returncode, duration_ms)
+
+
+def _parse_claude(
+    stdout: str, stderr: str, returncode: int | None, duration_ms: int
+) -> SedimentResult:
     result = SedimentResult(text=None)
-    for line in out.decode("utf-8", "replace").splitlines():
+    for line in stdout.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -140,7 +144,7 @@ async def run_sediment(
             result.output_tokens = usage.get("output_tokens") or 0
             result.cache_read_tokens = usage.get("cache_read_input_tokens") or 0
             result.cache_creation_tokens = usage.get("cache_creation_input_tokens") or 0
-            result.duration_ms = event.get("duration_ms")
+            result.duration_ms = event.get("duration_ms") or duration_ms
             if event.get("is_error"):
                 result.error = str(event.get("result") or event.get("subtype"))
             else:
@@ -149,9 +153,79 @@ async def run_sediment(
             result.model = event.get("model")
 
     if result.text is None and result.error is None:
-        detail = err.decode("utf-8", "replace").strip()[:300]
-        result.error = f"未取得结果（退出码 {proc.returncode}）{': ' + detail if detail else ''}"
+        result.error = _missing_result(returncode, stderr)
     return result
+
+
+def _parse_pi(
+    stdout: str, stderr: str, returncode: int | None, duration_ms: int
+) -> SedimentResult:
+    """Pi 的用量是每条 assistant 消息各报一次，要累加；最终文本取最后一条。"""
+    result = SedimentResult(text=None, duration_ms=duration_ms)
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        etype = event.get("type")
+        if etype == "message_end":
+            message = event.get("message") or {}
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            usage = message.get("usage") or {}
+            result.input_tokens += _int(usage.get("input"))
+            result.output_tokens += _int(usage.get("output"))
+            result.cache_read_tokens += _int(usage.get("cacheRead"))
+            result.cache_creation_tokens += _int(usage.get("cacheWrite"))
+            if message.get("model"):
+                result.model = message.get("model")
+            text = _assistant_text(message)
+            if text:
+                result.text = text
+            stop = message.get("stopReason")
+            if stop in ("error", "aborted", "length", "deferred"):
+                result.error = str(
+                    message.get("errorMessage") or f"stopReason={stop}"
+                )
+        elif etype == "agent_settled" and event.get("aborted"):
+            result.error = result.error or "执行被中止（aborted）"
+
+    if result.text is None and result.error is None:
+        result.error = _missing_result(returncode, stderr)
+    return result
+
+
+def _assistant_text(message: dict[str, Any]) -> str | None:
+    blocks = message.get("content")
+    if isinstance(blocks, str):
+        return blocks.strip() or None
+    if not isinstance(blocks, list):
+        return None
+    texts = [
+        b.get("text", "")
+        for b in blocks
+        if isinstance(b, dict) and b.get("type") == "text"
+    ]
+    joined = "\n".join(texts).strip()
+    return joined or None
+
+
+def _missing_result(returncode: int | None, stderr: str) -> str:
+    detail = stderr.strip()[:300]
+    return f"未取得结果（退出码 {returncode}）{': ' + detail if detail else ''}"
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 async def sediment_task(
@@ -164,6 +238,7 @@ async def sediment_task(
     diff: str,
     stat: str,
     session_id: str,
+    runtime: str | None = None,
 ) -> SedimentResult:
     """生成并追加一条变更记录。
 
@@ -176,7 +251,9 @@ async def sediment_task(
     prompt = build_prompt(
         project_name, task, diff, stat, max_diff_bytes=config.context.sediment_max_diff_bytes
     )
-    result = await run_sediment(config, workspace_path, prompt, session_id=session_id)
+    result = await run_sediment(
+        config, workspace_path, prompt, session_id=session_id, runtime=runtime
+    )
 
     if result.error or not result.text:
         log.warning("任务 %s 沉淀失败: %s", task.id, result.error)

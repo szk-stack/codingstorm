@@ -35,6 +35,7 @@ from codingstorm.models import (
     ModelUsage,
     ProjectCreate,
     ProjectOut,
+    ProjectRuntimeIn,
     ProjectWindowIn,
     ScheduleCreate,
     ScheduleOut,
@@ -116,6 +117,21 @@ async def get_project(request: Request, project_id: str) -> ProjectOut:
     if project is None:
         raise HTTPException(404, "项目不存在")
     return project
+
+
+@router.patch("/projects/{project_id}", response_model=ProjectOut)
+async def update_project(
+    request: Request, project_id: str, spec: ProjectRuntimeIn
+) -> ProjectOut:
+    """切换项目执行器。
+
+    只改 runtime —— 项目名、仓库路径、目标分支仍然不支持改（它们牵涉工作区、
+    分支和已有任务，改起来是另一个话题）。
+    """
+    store = _store(request)
+    if await store.get_project(project_id) is None:
+        raise HTTPException(404, "项目不存在")
+    return await store.set_project_runtime(project_id, spec.runtime)
 
 
 async def _require_repo_ready(project: ProjectOut) -> None:

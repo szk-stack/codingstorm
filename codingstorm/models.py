@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TaskStatus(StrEnum):
@@ -47,6 +47,15 @@ class ProjectCreate(BaseModel):
     # 留空则用 {root}/repos/<name>.git；不存在就建一个空裸仓库
     repo_path: str = ""
     target_branch: str = "main"
+    # 执行器。null / 空串 = 跟随全局 [runtime].default。
+    # 绑定在项目上而不是任务上：一个项目的代码风格和约束是固定的，执行器不该每条任务换。
+    runtime: Literal["claude", "pi"] | None = None
+
+    @field_validator("runtime", mode="before")
+    @classmethod
+    def _blank_runtime_is_inherit(cls, value: object) -> object:
+        # 表单里「跟随全局」提交的是空串，别让它变成 422
+        return value or None
 
 
 class ScheduleRuleIn(BaseModel):
@@ -136,6 +145,17 @@ class ContextOut(BaseModel):
     docs: list[DocOut]
 
 
+class ProjectRuntimeIn(BaseModel):
+    """切换项目执行器。null = 跟随全局默认。"""
+
+    runtime: Literal["claude", "pi"] | None = None
+
+    @field_validator("runtime", mode="before")
+    @classmethod
+    def _blank_runtime_is_inherit(cls, value: object) -> object:
+        return value or None
+
+
 class ProjectOut(BaseModel):
     id: str
     name: str
@@ -143,6 +163,8 @@ class ProjectOut(BaseModel):
     target_branch: str
     enabled: bool
     created_at: str
+    # NULL = 跟随全局 [runtime].default
+    runtime: str | None = None
     # NULL = 走全局窗口；见 timing.WindowOverride
     window_override: str | None = None
 
@@ -243,6 +265,8 @@ class AttemptOut(BaseModel):
     attempt_no: int
     session_id: str | None = None
     model: str | None = None
+    # 这次实际用的是哪个执行器；换过 runtime 之后，光看 model 分不出来
+    runtime: str | None = None
     exit_code: int | None = None
     result_subtype: str | None = None
     is_error: bool | None = None

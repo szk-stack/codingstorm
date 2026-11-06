@@ -30,6 +30,9 @@
 
 ## 3. 技术契约（已核实）
 
+> 本节是 Claude Code 的契约（Phase 0 实测）。Pi 的对应契约、事件映射与验证情况
+> 见 [`pi-agent-integration.md`](pi-agent-integration.md)。
+
 来源：本地 `claude --help`（2.1.274）+ 服务器实测（2.1.220）+ 官方文档调研。
 
 ### 3.1 无头模式调用
@@ -116,14 +119,26 @@ effort                         = max
                 └─ Scheduler (asyncio)
                      │  每项目串行 · 全局 Semaphore(N)
                      ↓
-                   Runner ──→ claude -p ──stdout──→ 每任务一个 NDJSON 日志文件
-                     │                                      │
+                   Runner ──→ 执行器 ──stdout──→ 每任务一个 NDJSON 日志文件
+                     │        (claude/pi)                  │
                      │                           tail 协程 ──┴──→ 语义事件落库 + WS
                      ├─ Git 操作（worktree / rebase / update-ref）
                      └─ Context（组装 prompt / 任务后沉淀）
 ```
 
-### 4.1 目录结构
+### 4.1 执行器抽象（2026-11-06 追加）
+
+Phase 1–8 假设底下永远是 Claude Code。接入 Pi 时把「进程管理」和「事件解释」拆开：
+
+- `runner.py` 只管子进程、日志 tail、看门狗、落库；
+- `agents/` 里每个执行器负责命令行构造 + 把一行 JSON 翻译成
+  `init / assistant / tool_result / result` 四种语义事件；
+- `scheduler` 按项目选执行器（`projects.runtime` → 全局 `[runtime].default`）。
+
+于是 Web UI、成本记账、多轮会话、diff / approve 全部不用知道底下换了谁。
+两个执行器的差异与验收清单见 `pi-agent-integration.md`。
+
+### 4.2 目录结构
 
 ```
 codingstorm/
@@ -134,7 +149,8 @@ codingstorm/
     models.py      pydantic 模型
     timing.py      执行窗口与定时规则的时间计算（纯函数，不碰 DB）
     git_ops.py     worktree / rebase / update-ref / diff / 对账
-    runner.py      子进程管理 + NDJSON 解析 + 日志 tail
+    runner.py      子进程管理 + 日志 tail + 看门狗（不含事件解释）
+    agents/        执行器：claude / pi 的命令行与事件翻译
     scheduler.py   每项目串行队列 + 全局并发上限 + 执行窗口 + 定时触发 + 看门狗
     context.py     三层上下文组装与沉淀
     api.py         FastAPI 路由 + WebSocket
@@ -147,10 +163,11 @@ codingstorm/
   docs/
 ```
 
-### 4.2 数据模型
+### 4.3 数据模型
 
 ```sql
-projects(id, name, repo_path, target_branch, worktree_root, context_dir,
+projects(id, name, repo_path, target_branch, runtime,      -- NULL = 跟随全局 [runtime].default
+         worktree_root, context_dir,
          max_concurrency, max_turns, wall_clock_timeout_s, created_at, enabled,
          window_override)                          -- JSON；NULL = 继承全局窗口
 
@@ -173,7 +190,7 @@ schedules(id, project_id, title, body, kind, priority,
           missed_at,                               -- 一次性任务错过了时刻
           created_at)
 
-attempts(id, task_id, attempt_no, session_id, pid, pid_starttime, model,
+attempts(id, task_id, attempt_no, session_id, pid, pid_starttime, model, runtime,
          exit_code, result_subtype, is_error, error_text, duration_ms, num_turns,
          input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
          cost_usd, price_version, raw_log_path,
@@ -187,7 +204,7 @@ task_events(task_id, seq, ts, type, payload)       -- 语义事件，WITHOUT ROW
 
 **`kind` 只是标签**，不改变执行流程。
 
-### 4.3 任务状态机
+### 4.4 任务状态机
 
 ```
 queued ──→ running ──→ awaiting_review ──→ merged

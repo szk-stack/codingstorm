@@ -352,6 +352,17 @@ class Scheduler:
 
     # ---------- 执行单条任务 ----------
 
+    def _fresh_prompt(self, project_name: str, task, messages) -> str:
+        """全新会话用的完整 prompt：项目约定 + 文档索引 + 变更记录 + 任务。"""
+        prompt = self.contexts.build_prompt(
+            project_name,
+            task,
+            max_journal_chars=self.config.context.journal_prompt_chars,
+        )
+        if messages:
+            prompt += f"\n\n---\n\n## 追加说明\n\n{messages[-1].text}"
+        return prompt
+
     async def _run(self, row: dict[str, Any]) -> None:
         task_id = row["id"]
         project = await self.store.get_project(row["project_id"])
@@ -363,8 +374,12 @@ class Scheduler:
         if task is None:
             return
 
+        # 项目级执行器覆盖；None = 跟随全局默认。整条任务固定用同一个执行器，
+        # 不按轮次切换 —— 会话 id、上下文格式都是执行器相关的。
+        runtime = project.runtime or self.config.runtime.default
+
         attempt_no = await self.store.next_attempt_no(task_id)
-        await self.store.start_attempt(task_id, attempt_no)
+        await self.store.start_attempt(task_id, attempt_no, runtime=runtime)
         outcome = RunOutcome()
         workspace = None
 
@@ -378,11 +393,21 @@ class Scheduler:
         try:
             messages = await self.store.list_messages(task_id)
             last_session = await self.store.last_session_id(task_id) if messages else None
+            # 项目中途换了执行器？旧会话在新 CLI 里打不开。此时仍然复用工作区
+            # （分支上的改动不能丢），但要开新会话并重新注入完整上下文，
+            # 否则模型只会收到一句「改成返回列表」，前面几轮全看不见。
+            prev_runtime = (
+                await self.store.previous_attempt_runtime(task_id, attempt_no)
+                if messages else None
+            )
+            runtime_changed = bool(
+                prev_runtime and prev_runtime != runtime and not strict
+            )
 
             # 追加过消息、且上一轮留下了会话和工作区 → 接着聊。
             # 少任何一样就是从头跑：比如第一轮在切工作区时就失败了（仓库还是空的），
             # branch 为空，这次带上追加说明重开。
-            resume = bool(messages and last_session and task.branch)
+            resume = bool(messages and last_session and task.branch) and not runtime_changed
             if resume:
                 workspace = await self.workspaces.prepare_resume(
                     project_name=project.name,
@@ -410,6 +435,17 @@ class Scheduler:
                             max_review_rounds=self.config.agents.max_review_rounds,
                         )
                 session_id = last_session
+            elif runtime_changed and messages and task.branch:
+                workspace = await self.workspaces.prepare_resume(
+                    project_name=project.name,
+                    repo_path=project.repo_path,
+                    target_branch=project.target_branch,
+                    task_id=task_id,
+                    branch=task.branch,
+                    base_commit=task.base_commit or "",
+                )
+                prompt = self._fresh_prompt(project.name, task, messages)
+                session_id = str(uuid.uuid4())
             else:
                 workspace = await self.workspaces.prepare(
                     project_name=project.name,
@@ -418,13 +454,7 @@ class Scheduler:
                     task_id=task_id,
                     title=task.title,
                 )
-                prompt = self.contexts.build_prompt(
-                    project.name,
-                    task,
-                    max_journal_chars=self.config.context.journal_prompt_chars,
-                )
-                if messages:
-                    prompt += f"\n\n---\n\n## 追加说明\n\n{messages[-1].text}"
+                prompt = self._fresh_prompt(project.name, task, messages)
                 if strict and run_path is not None:
                     sp = state_path(run_path)
                     if not sp.exists():
@@ -468,6 +498,7 @@ class Scheduler:
                 # 严格模式多授权一个运行目录：state.json 与阶段产物都在那儿
                 context_dirs=[ctx.root, run_path] if run_path is not None else None,
                 resume=resume,
+                runtime=runtime,
             )
         except asyncio.CancelledError:
             await self.store.set_status(task_id, TaskStatus.INTERRUPTED, error_text="任务被取消")
@@ -511,12 +542,18 @@ class Scheduler:
             return
 
         if strict and run_path is not None:
-            await self._finalize_strict(task_id, task, project.name, workspace, run_path)
+            await self._finalize_strict(task_id, task, project.name, workspace, run_path, runtime)
         else:
-            await self._finalize_success(task_id, task, project.name, workspace)
+            await self._finalize_success(task_id, task, project.name, workspace, runtime)
 
     async def _finalize_strict(
-        self, task_id: str, task, project_name: str, workspace, run_path: Path
+        self,
+        task_id: str,
+        task,
+        project_name: str,
+        workspace,
+        run_path: Path,
+        runtime: str,
     ) -> None:
         """严格模式收尾：读 state.json 决定挂起还是交付。
 
@@ -555,9 +592,11 @@ class Scheduler:
             log.info("任务 %s 停在人工门，等待【进入开发】", task_id)
             return
 
-        await self._finalize_success(task_id, task, project_name, workspace)
+        await self._finalize_success(task_id, task, project_name, workspace, runtime)
 
-    async def _finalize_success(self, task_id: str, task, project_name: str, workspace) -> None:
+    async def _finalize_success(
+        self, task_id: str, task, project_name: str, workspace, runtime: str
+    ) -> None:
         """提交改动、rebase 到最新 target、置为待审。
 
         失败**不删工作区** —— 现场要留着排查。
@@ -591,9 +630,9 @@ class Scheduler:
             "有改动" if result.had_changes else "无改动",
         )
         if result.had_changes:
-            await self._sediment(task, project_name, workspace)
+            await self._sediment(task, project_name, workspace, runtime)
 
-    async def _sediment(self, task, project_name: str, workspace) -> None:
+    async def _sediment(self, task, project_name: str, workspace, runtime: str) -> None:
         """任务结束后自动写变更记录。
 
         **必须自动** —— 需要人记得去维护的文档一定会腐烂（Cline 的 Memory Bank 就是这么死的）。
@@ -610,7 +649,7 @@ class Scheduler:
             return
 
         attempt_no = await self.store.next_attempt_no(task.id)
-        await self.store.start_attempt(task.id, attempt_no, origin="sediment")
+        await self.store.start_attempt(task.id, attempt_no, origin="sediment", runtime=runtime)
         session_id = str(uuid.uuid4())
         try:
             result = await sediment_task(
@@ -622,6 +661,7 @@ class Scheduler:
                 diff=diff,
                 stat=stat,
                 session_id=session_id,
+                runtime=runtime,
             )
         except Exception as exc:
             log.exception("沉淀异常")

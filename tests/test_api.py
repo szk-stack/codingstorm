@@ -425,3 +425,51 @@ def test_messages_start_empty(client: TestClient):
     p = _mk_project(client)
     task = client.post(f"/api/projects/{p['id']}/tasks", json={"title": "x"}).json()
     assert client.get(f"/api/tasks/{task['id']}/messages").json() == []
+
+
+# ---------- 执行器 ----------
+
+def test_project_runtime_at_creation_and_patch(client: TestClient):
+    p = _mk_project(client, "with-pi", seed=False)
+    assert p["runtime"] is None
+
+    body = {"name": "pi-native", "runtime": "pi"}
+    r = client.post("/api/projects", json=body)
+    assert r.status_code == 201
+    project = r.json()
+    assert project["runtime"] == "pi"
+
+    r = client.patch(f"/api/projects/{p['id']}", json={"runtime": "pi"})
+    assert r.status_code == 200 and r.json()["runtime"] == "pi"
+
+    r = client.patch(f"/api/projects/{p['id']}", json={"runtime": None})
+    assert r.status_code == 200 and r.json()["runtime"] is None
+
+    assert client.patch("/api/projects/nope", json={"runtime": "pi"}).status_code == 404
+    assert client.patch(
+        f"/api/projects/{p['id']}", json={"runtime": "other"}
+    ).status_code == 422
+
+
+# ---------- 执行器 ----------
+
+def test_project_runtime_at_creation_and_patch(client: TestClient):
+    p = _mk_project(client, "with-pi", seed=False)
+    assert p["runtime"] is None
+
+    body = {"name": "pi-native", "runtime": "pi"}
+    r = client.post("/api/projects", json=body)
+    assert r.status_code == 201
+    project = r.json()
+    assert project["runtime"] == "pi"
+
+    r = client.patch(f"/api/projects/{p['id']}", json={"runtime": "pi"})
+    assert r.status_code == 200 and r.json()["runtime"] == "pi"
+
+    r = client.patch(f"/api/projects/{p['id']}", json={"runtime": None})
+    assert r.status_code == 200 and r.json()["runtime"] is None
+
+    assert client.patch("/api/projects/nope", json={"runtime": "pi"}).status_code == 404
+    assert client.patch(
+        f"/api/projects/{p['id']}", json={"runtime": "other"}
+    ).status_code == 422

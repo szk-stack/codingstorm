@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS projects (
     name          TEXT NOT NULL UNIQUE,
     repo_path     TEXT NOT NULL,
     target_branch TEXT NOT NULL DEFAULT 'main',
+    -- 执行器覆盖：'claude' / 'pi'；NULL = 跟随全局 [runtime].default
+    runtime       TEXT,
     enabled       INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT NOT NULL,
     -- 该项目对全局执行窗口的覆盖；NULL = 继承全局。
@@ -93,6 +95,8 @@ CREATE TABLE IF NOT EXISTS attempts (
     pid                   INTEGER,
     pid_starttime         TEXT,
     model                 TEXT,
+    -- 这次实际用的执行器（claude / pi）；沉淀那步也记
+    runtime               TEXT,
     exit_code             INTEGER,
     result_subtype        TEXT,
     is_error              INTEGER,
@@ -142,6 +146,8 @@ _SENTINEL = object()
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("tasks", "schedule_id", "TEXT"),
     ("projects", "window_override", "TEXT"),
+    ("projects", "runtime", "TEXT"),
+    ("attempts", "runtime", "TEXT"),
     ("tasks", "mode", "TEXT NOT NULL DEFAULT 'plain'"),
     ("tasks", "agent_id", "TEXT"),
     ("tasks", "stage", "TEXT"),

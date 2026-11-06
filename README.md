@@ -20,7 +20,7 @@ cs diff <任务id>          # 回来看它改了什么
 cs approve <任务id>       # 满意，合进主干
 ```
 
-**它不是什么**（免得一开始就想歪）：不是编辑器插件，也不是聊天窗口；**不会自动把代码合进主干**，每份改动都要你亲手批准；它需要一台能跑 `claude` 命令的机器，你在自己电脑上发指令、服务端在那台机器上执行。
+**它不是什么**（免得一开始就想歪）：不是编辑器插件，也不是聊天窗口；**不会自动把代码合进主干**，每份改动都要你亲手批准；它需要一台能跑 `claude`（或 `pi`）命令的机器，你在自己电脑上发指令、服务端在那台机器上执行。
 
 > 这文件只讲怎么用。为什么这么设计、技术契约怎么核实的，见 [`docs/architecture.md`](docs/architecture.md)；踩过的坑在 [`docs/pitfalls.md`](docs/pitfalls.md)。
 
@@ -34,9 +34,9 @@ cs approve <任务id>       # 满意，合进主干
 |---|---|---|
 | Python 3.11+ | `python --version` | 3.11 或更高 |
 | git | `git --version` | 有输出即可 |
-| Claude Code CLI | `claude --version` | 有输出，且这个账号已登录 |
+| 至少一个执行器 | `claude --version` 或 `pi --version` | 有输出，且这个账号已登录 |
 
-这三样必须在**跑服务端的那台机器**上。`claude` 要能在 PATH 里直接找到，并且能正常调用模型——任务执行时不再有任何人工授权环节。
+执行器在**跑服务端的那台机器**上，要能在 PATH 里直接找到，并且能正常调用模型——任务执行时不再有任何人工授权环节。默认用 Claude Code；想用 Pi 见[执行器](#执行器)。
 
 ### 第 1 步 · 安装
 
@@ -103,6 +103,44 @@ cs discard <任务id>       # 不满意 → 丢掉，主干纹丝不动
 
 ---
 
+<a id="执行器"></a>
+
+## 执行器：Claude Code 或 Pi
+
+默认是 Claude Code，行为与旧版一致。要换 Pi（[`@earendil-works/pi-coding-agent`](https://pi.dev)）：
+
+```toml
+[runtime]
+default = "pi"
+
+[pi]
+binary = "pi"
+# 留空 = 用 Pi 自己配置里的默认模型；无人值守建议显式写死
+# model = "deepseek/deepseek-chat"
+```
+
+也可以只让某个项目用 Pi：注册时在「执行器」下拉里选，或者：
+
+```bash
+cs runtime demo pi          # 已有项目切换；inherit = 跟随全局
+```
+
+等价于给项目发一条 `PATCH`：
+
+```bash
+curl -X PATCH http://127.0.0.1:8788/api/projects/<项目id> \
+  -H 'content-type: application/json' -d '{"runtime":"pi"}'
+```
+
+两边语义已经对齐（每个任务一个 worktree、一条分支、同一套 diff / 批准 / 多轮对话），
+但底层差异不小：Pi 没有 `--max-turns`（平台数轮数）、没有权限系统（边界靠一个
+`tool_call` 扩展调同一个 `guard.py`）、**助手回复失败时仍然退出 0**（只能看事件流判成败）。
+另外，切换执行器后，未完成任务的下一轮会开新会话（旧 CLI 的会话文件打不开），
+工作区改动会保留，但前几轮的对话上下文不在了。
+完整对照与验证情况见 [`docs/pi-agent-integration.md`](docs/pi-agent-integration.md)。
+
+---
+
 ## 两条路：从零开始，还是接一个已有仓库
 
 | | 你要做什么 | 什么时候用 |
@@ -165,6 +203,7 @@ git clone tencent:/home/ubuntu/codingstorm/repos/demo.git demo
 | 我想… | 看哪一节 |
 |---|---|
 | 查某个命令怎么写 | [常用命令](#常用命令) |
+| 换成 Pi 执行 / 让某个项目用 Pi | [执行器](#执行器) |
 | 看懂任务现在处于什么状态 | [任务状态](#任务状态) |
 | 让 AI 在原有改动上接着改 | [多轮对话](#多轮对话) |
 | 修 bug 时先出方案、等我点头再动手 | [严格模式](#严格模式phase-8a) |
@@ -198,6 +237,7 @@ cs discard <任务id>         # 丢弃
 
 ```bash
 cs projects                    # 有哪些项目
+cs runtime <项目> [claude|pi|inherit]  # 查看/切换这个项目用哪个执行器
 cs submit <项目> "<标题>" [--body "..."] [--kind requirement|instruction|bug|task] [--priority N] [--mode plain|strict]
 cs ls [--project <名>] [--status <状态>]
 cs show <任务id>               # 详情 + 每次尝试的 token 与成本
@@ -389,6 +429,10 @@ python -m codingstorm.app --config codingstorm.toml
 | `claude.guard_block_push` | `true` | 拦 `git push` 与改 remote |
 | `scheduler.window.enabled` | `false` | 只在指定时段跑任务（谷时省钱） |
 | `scheduler.misfire_grace_s` | `600` | 定时任务迟到多久还算「准时」 |
+| `runtime.default` | `claude` | 全局执行器；项目可以单独覆盖 |
+| `pi.binary` | `pi` | Pi 的可执行文件名/路径 |
+| `pi.model` | 空 | 留空用 Pi 自己的默认模型；支持 `provider/id` |
+| `pi.project_trust` | `ignore` | 不加载仓库里的 `.pi` 扩展与设置（无人值守更安全） |
 
 每项在 `codingstorm.example.toml` 里都有注释说明为什么这么设。启动参数还有 `--host` / `--port` 覆盖监听地址、`--no-scheduler` 只起 HTTP 不执行任务（调试用）、`--log-level`。
 
@@ -446,6 +490,7 @@ repos/              被调度的仓库。注册时留空 repo_path 就用这里�
 | GET | `/api/health` | 健康检查 |
 | GET / POST | `/api/projects` | 列出 / 注册项目 |
 | GET | `/api/projects/{id}` | 项目详情 |
+| PATCH | `/api/projects/{id}` | 切换项目执行器（`{"runtime": "claude"\|"pi"\|null}`） |
 | GET / POST | `/api/projects/{id}/tasks` | 列出 / 提交任务 |
 | GET | `/api/tasks` | 列出任务（`?project_id=&status=`） |
 | GET | `/api/tasks/{id}` | 任务详情 |
@@ -492,17 +537,18 @@ repos/              被调度的仓库。注册时留空 repo_path 就用这里�
 
 ```bash
 pip install -e ".[dev]"
-pytest -q          # 295 项
+pytest -q          # 324 项
 ```
 
-代码在 `codingstorm/`：`api.py`（HTTP）、`scheduler.py`（并发、执行窗口、定时触发与生命周期）、`runner.py`（拉起子进程、解析 NDJSON）、`workspace.py`（worktree 与合并）、`context.py`（上下文三层）、`agent_state.py`（严格模式状态机）、`timing.py`（窗口与定时规则的时间计算，纯函数）、`store.py` + `db.py`（数据层）、`cli.py`（`cs`）、`static/`（无构建步骤的前端）。
+代码在 `codingstorm/`：`api.py`（HTTP）、`scheduler.py`（并发、执行窗口、定时触发与生命周期）、`runner.py`（拉起子进程、tail 日志、看门狗）、`agents/`（执行器：Claude Code / Pi 的命令行与事件翻译）、`workspace.py`（worktree 与合并）、`context.py`（上下文三层）、`agent_state.py`（严格模式状态机）、`timing.py`（窗口与定时规则的时间计算，纯函数）、`store.py` + `db.py`（数据层）、`cli.py`（`cs`）、`static/`（无构建步骤的前端）。
 
 改架构前先读 `docs/architecture.md`，那里记录了已核实的技术契约和压测出来的实现约束 —— 不少看起来能简化的地方，简了就会踩坑（该文档第 5 节整节都是）。踩过的坑另见 [`docs/pitfalls.md`](docs/pitfalls.md)。
 
 ## 已知限制
 
 - **默认只监听本机。** 要远程访问请自己加反向代理。
-- **执行机内存决定并发上限。** 每个 Claude Code 进程约 200–400MB，超了会 OOM。
+- **执行机内存决定并发上限。** 每个 Claude Code 进程约 200–400MB，超了会 OOM。Pi 是 Node 进程，占用不同，并发仍要保守估。
+- **Pi 没有权限系统，也没有 `--max-turns`。** 边界靠平台生成的 `tool_call` 扩展调同一个 `guard.py`；轮数由平台数 `turn_end`、在下一轮开始前拦下。详见 [`docs/pi-agent-integration.md`](docs/pi-agent-integration.md)。
 - **任务粒度太细不划算。** Claude Code 的固定开销很高（实测一句「OK」约 2.6 万 input token），一句话塞多个需求也不会更快 —— 一个任务一次执行。
 - **任务之间看不到彼此未合并的改动**，这是设计的一部分，不是 bug。周期性的定时任务尤其容易踩：人不审，第二天那条仍然基于旧主干 —— 界面上会标出来提醒。
 - **执行窗口的「临时关闭」不持久。** 重启就恢复限制。这是刻意的失败方向：宁愿你重新关一次，也不愿忘了恢复之后一直按全价烧钱。

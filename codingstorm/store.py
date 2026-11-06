@@ -46,9 +46,9 @@ class Store:
     async def create_project(self, spec: ProjectCreate) -> ProjectOut:
         pid = new_id()
         await self.db.execute(
-            "INSERT INTO projects (id, name, repo_path, target_branch, created_at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (pid, spec.name, spec.repo_path, spec.target_branch, utcnow()),
+            "INSERT INTO projects (id, name, repo_path, target_branch, runtime, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (pid, spec.name, spec.repo_path, spec.target_branch, spec.runtime, utcnow()),
         )
         row = await self.db.query_one("SELECT * FROM projects WHERE id = ?", (pid,))
         return _project_out(row)
@@ -68,6 +68,14 @@ class Store:
     async def set_project_window(self, project_id: str, override: str | None) -> ProjectOut:
         await self.db.execute(
             "UPDATE projects SET window_override = ? WHERE id = ?", (override, project_id)
+        )
+        project = await self.get_project(project_id)
+        assert project is not None
+        return project
+
+    async def set_project_runtime(self, project_id: str, runtime: str | None) -> ProjectOut:
+        await self.db.execute(
+            "UPDATE projects SET runtime = ? WHERE id = ?", (runtime, project_id)
         )
         project = await self.get_project(project_id)
         assert project is not None
@@ -385,6 +393,22 @@ class Store:
         )
         return row["session_id"] if row else None
 
+    async def previous_attempt_runtime(
+        self, task_id: str, attempt_no: int
+    ) -> str | None:
+        """上一轮用的是哪个执行器（不含当前这次尝试）。
+
+        多轮对话时如果项目换了执行器，旧的会话 id 在新 CLI 里打不开 ——
+        调用方据此决定「还发一句话」还是「带上完整上下文重开」。
+        """
+        row = await self.db.query_one(
+            "SELECT runtime FROM attempts"
+            " WHERE task_id = ? AND attempt_no < ? AND origin = 'task'"
+            " ORDER BY attempt_no DESC LIMIT 1",
+            (task_id, attempt_no),
+        )
+        return row["runtime"] if row else None
+
     async def touch_task(self, task_id: str) -> None:
         await self.db.execute("UPDATE tasks SET last_event_at = ? WHERE id = ?", (utcnow(), task_id))
 
@@ -398,12 +422,17 @@ class Store:
         return int(row["n"])
 
     async def start_attempt(
-        self, task_id: str, attempt_no: int, *, origin: str = "task"
+        self,
+        task_id: str,
+        attempt_no: int,
+        *,
+        origin: str = "task",
+        runtime: str | None = None,
     ) -> None:
         await self.db.execute(
-            "INSERT INTO attempts (task_id, attempt_no, origin, started_at)"
-            " VALUES (?, ?, ?, ?)",
-            (task_id, attempt_no, origin, utcnow()),
+            "INSERT INTO attempts (task_id, attempt_no, origin, runtime, started_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (task_id, attempt_no, origin, runtime, utcnow()),
         )
 
     async def finish_attempt(self, task_id: str, attempt_no: int, **fields: Any) -> None:
@@ -439,9 +468,10 @@ class Store:
 
     async def list_attempts(self, task_id: str) -> list[AttemptOut]:
         rows = await self.db.query(
-            "SELECT attempt_no, session_id, model, exit_code, result_subtype, is_error,"
-            " error_text, num_turns, input_tokens, output_tokens, cache_read_tokens,"
-            " cache_creation_tokens, cost_usd, price_version, origin, started_at, finished_at"
+            "SELECT attempt_no, session_id, model, runtime, exit_code, result_subtype,"
+            " is_error, error_text, num_turns, input_tokens, output_tokens,"
+            " cache_read_tokens, cache_creation_tokens, cost_usd, price_version,"
+            " origin, started_at, finished_at"
             " FROM attempts WHERE task_id = ? ORDER BY attempt_no",
             (task_id,),
         )
@@ -562,6 +592,7 @@ def _project_out(row: sqlite3.Row) -> ProjectOut:
         target_branch=row["target_branch"],
         enabled=bool(row["enabled"]),
         created_at=row["created_at"],
+        runtime=row["runtime"] if "runtime" in keys else None,
         window_override=row["window_override"] if "window_override" in keys else None,
     )
 

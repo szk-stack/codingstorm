@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 DEFAULT_ROOT = Path.home() / "codingstorm"
+
+# 执行器。项目可以覆盖全局默认值（见 ProjectCreate.runtime）。
+RuntimeName = Literal["claude", "pi"]
 
 
 class ServerConfig(BaseModel):
@@ -37,6 +41,7 @@ class WindowConfig(BaseModel):
 
 class SchedulerConfig(BaseModel):
     # 默认 2 —— 执行机可用内存有限，每个 Claude Code 进程约 200-400MB
+    # （Pi 是 Node 进程，占用不同但同样不轻）
     max_concurrent: int = Field(default=2, ge=1, le=8)
     poll_interval_s: float = Field(default=1.0, gt=0)
     # 定时任务迟到多久还算「准时」。
@@ -98,6 +103,57 @@ class PricingConfig(BaseModel):
     prices_file: Path | None = None
 
 
+class RuntimeConfig(BaseModel):
+    """用哪个执行器跑任务。
+
+    默认 claude —— 升级版本不能让已有部署突然换一套 CLI 行为。项目级可以覆盖
+    （注册时的 `runtime` 字段），所以同一台机器上可以一个项目用 Claude Code、
+    另一个项目用 Pi。
+    """
+
+    default: RuntimeName = "claude"
+
+
+class PiConfig(BaseModel):
+    """Pi Coding Agent（`@earendil-works/pi-coding-agent`）。
+
+    和 Claude Code 的关键差异（详见 docs/pi-agent-integration.md）：
+
+    - 它是 **JSON 事件流**（`--mode json`），不是 Anthropic 的 stream-json；
+      事件语义靠 `agents/pi.py` 翻译成平台统一的 init/assistant/tool_result/result。
+    - **没有权限系统**，默认就按启动用户的权限跑。边界拦截只能靠一个 `tool_call`
+      扩展去做（平台会生成 `{root}/guard/pi-guard.ts`，用 `-e` 挂上）。
+    - **没有 `--max-turns`**，所以轮数上限由平台数 `turn_end` 事件来执行。
+    - 会话用 `--session-id` 打开或新建，和 Claude Code 的语义一致。
+    """
+
+    binary: str = "pi"
+    # 留空 = 用 Pi 自己 settings.json 里的默认模型；指定时支持 `provider/id` 与 `:thinking` 后缀
+    model: str | None = None
+    provider: str | None = None
+    thinking: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
+    # 项目信任：ignore = 不加载仓库里的 .pi 配置与扩展（无人值守的默认，安全）；
+    # approve = 信任并加载；inherit = 不传开关，交给 Pi 自己的配置决定。
+    project_trust: Literal["ignore", "approve", "inherit"] = "ignore"
+    # 会话文件目录。留空 = Pi 的默认位置（~/.pi/agent/sessions，按 cwd 分组）。
+    session_dir: Path | None = None
+    # 透传参数，用于 Pi 升级后新增的开关；排在平台参数之后、prompt 之前
+    extra_args: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _provider_needs_model(self) -> "PiConfig":
+        # Pi 的 --provider 必须和 --model 一起用，单独传会直接报错退出
+        if self.provider and not self.model:
+            raise ValueError("[pi].provider 必须和 [pi].model 一起设置")
+        return self
+
+    @field_validator("model", "provider", "thinking", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value: object) -> object:
+        # TOML 里留空写成 "" 是常见写法，别让它变成 422/校验错误
+        return value or None
+
+
 class Config(BaseModel):
     root: Path = DEFAULT_ROOT
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -105,7 +161,9 @@ class Config(BaseModel):
     task: TaskConfig = Field(default_factory=TaskConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
+    pi: PiConfig = Field(default_factory=PiConfig)
     pricing: PricingConfig = Field(default_factory=PricingConfig)
 
     @property
@@ -161,4 +219,8 @@ class Config(BaseModel):
             data = tomllib.load(f)
         if "root" in data:
             data["root"] = Path(data["root"]).expanduser()
+        # 嵌套的路径字段也要展开，否则 `~` 会被当成字面目录名
+        pi = data.get("pi")
+        if isinstance(pi, dict) and pi.get("session_dir"):
+            pi["session_dir"] = Path(pi["session_dir"]).expanduser()
         return cls.model_validate(data)

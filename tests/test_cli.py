@@ -20,6 +20,8 @@ def parse(argv: list[str]):
     "argv,command",
     [
         (["projects"], "projects"),
+        (["runtime", "demo"], "runtime"),
+        (["runtime", "demo", "pi"], "runtime"),
         (["submit", "demo", "标题"], "submit"),
         (["ls"], "ls"),
         (["show", "abc"], "show"),

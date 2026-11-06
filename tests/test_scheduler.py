@@ -88,12 +88,30 @@ def test_success_moves_to_awaiting_review(env):
     run(main())
 
 
+def test_project_runtime_is_passed_to_runner(env):
+    """项目级执行器覆盖要一路传到 runner，不能只在界面上显示。"""
+    _, store, runner, sched, repo = env
+
+    async def main():
+        p = await store.create_project(
+            ProjectCreate(name="with-pi", repo_path=str(repo), runtime="pi")
+        )
+        await store.create_task(p.id, TaskCreate(title="A"))
+        await sched._tick()
+        await _drain(sched)
+
+        assert runner.calls[0]["runtime"] == "pi"
+        attempts = await store.list_attempts((await store.list_tasks())[0].id)
+        assert attempts[0].runtime == "pi"
+
+    run(main())
+
+
 def test_failure_moves_to_failed_with_reason(env):
     _, store, runner, sched, repo = env
     runner.outcome_fn = lambda **_: RunOutcome(
         saw_result=True, is_error=True, result_subtype="error_max_turns"
     )
-
     async def main():
         await _mk(store, repo)
         await sched._tick()
@@ -170,6 +188,34 @@ def test_followup_resumes_session_in_same_worktree(env):
         # 只发新那一句；上下文都在会话里，不重复注入
         assert second["prompt"] == "再改成返回列表，不要返回单个值"
         assert second["cwd"] == first["cwd"]
+
+    run(main())
+
+
+def test_followup_after_runtime_switch_starts_new_session_with_full_context(env):
+    """项目中途换执行器：工作区要复用（改动不能丢），但旧会话在新 CLI 里打不开，
+    必须开新会话并重新注入完整上下文。"""
+    _, store, runner, sched, repo = env
+
+    async def main():
+        pid = await _mk(store, repo)
+        await sched._tick()
+        await _drain(sched)
+        first = runner.calls[0]
+        task = (await store.list_tasks())[0]
+
+        await store.set_project_runtime(pid, "pi")
+        await store.add_message(task.id, "再改一下")
+        await store.requeue(task.id)
+        await sched._tick()
+        await _drain(sched)
+
+        second = runner.calls[1]
+        assert second["runtime"] == "pi"
+        assert second["resume"] is False
+        assert second["session_id"] != first["session_id"]
+        assert second["cwd"] == first["cwd"]
+        assert "追加说明" in second["prompt"], "新会话必须带上完整上下文"
 
     run(main())
 

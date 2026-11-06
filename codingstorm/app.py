@@ -31,11 +31,13 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
     async def lifespan(app: FastAPI):
         config.ensure_dirs()
 
-        # 装配边界拦截钩子。`--settings` 是**合并**进用户配置的（Phase 0 附带实测过），
-        # 所以凭证等设置不受影响。
-        guard_settings = GuardInstaller(config).install()
+        # 装配边界拦截钩子。Claude Code 走 `--settings`（**合并**进用户配置，
+        # 所以凭证等设置不受影响）；Pi 走 `-e pi-guard.ts`，共用同一份规则。
+        installer = GuardInstaller(config)
+        guard_settings = installer.install()
         if guard_settings is not None:
             config.claude.settings_file = guard_settings
+        installer.install_pi_guard()
 
         prices = PriceTable.load(
             config.pricing.prices_file or (config.root / "prices.toml")
@@ -107,7 +109,7 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="codingstorm", description="按项目隔离的 Claude Code 任务队列")
+    parser = argparse.ArgumentParser(prog="codingstorm", description="按项目隔离的 AI 编码任务队列")
     parser.add_argument("--config", type=Path, default=None, help="TOML 配置文件路径")
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)

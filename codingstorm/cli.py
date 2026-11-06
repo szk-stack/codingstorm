@@ -102,7 +102,25 @@ def cmd_projects(args) -> int:
         print("还没有项目。用 `cs projects` 之外的方式注册第一个项目。")
         return 0
     for p in rows:
-        print(f"{p['id']}  {p['name']:16s} {p['target_branch']:8s} {p['repo_path']}")
+        runtime = p.get("runtime") or "-"
+        print(
+            f"{p['id']}  {p['name']:16s} {p['target_branch']:8s} "
+            f"{runtime:8s} {p['repo_path']}"
+        )
+    return 0
+
+
+def cmd_runtime(args) -> int:
+    project = _find_project(args.base, args.project)
+    if args.runtime is None:
+        current = project.get("runtime") or "跟随全局"
+        print(f"{project['name']} 的执行器：{current}")
+        return 0
+    value = None if args.runtime == "inherit" else args.runtime
+    updated = call(
+        args.base, "PATCH", f"/api/projects/{project['id']}", {"runtime": value}
+    )
+    print(f"{updated['name']} 的执行器：{updated.get('runtime') or '跟随全局'}")
     return 0
 
 
@@ -173,7 +191,8 @@ def cmd_show(args) -> int:
 
     attempts = call(args.base, "GET", f"/api/tasks/{t['id']}/attempts") or []
     for a in attempts:
-        label = "记录沉淀" if a["origin"] == "sediment" else "执行任务"
+        who = f" · {a['runtime']}" if a.get("runtime") else ""
+        label = ("记录沉淀" if a["origin"] == "sediment" else "执行任务") + who
         if a.get("finished_at") is None:
             # 沉淀是在任务转入待审之后才跑的，这时候可能还没结束
             print(f"  {label}  （进行中）")
@@ -493,6 +512,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub = top.add_subparsers(dest="command", required=True)
 
     sub.add_parser("projects", help="列出项目").set_defaults(func=cmd_projects)
+
+    s = sub.add_parser("runtime", help="查看/切换项目执行器")
+    s.add_argument("project", help="项目名或 id")
+    s.add_argument(
+        "runtime",
+        nargs="?",
+        choices=["claude", "pi", "inherit"],
+        help="claude / pi；inherit = 跟随全局默认。不填只看当前值",
+    )
+    s.set_defaults(func=cmd_runtime)
 
     s = sub.add_parser("submit", help="提交任务（入队即返回，不用等）")
     s.add_argument("project", help="项目名或 id")

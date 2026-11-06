@@ -583,6 +583,27 @@ HTTP API —— 给它一个 CLI 加上一份技能说明就够了，不用去�
 
 **Phase 0–3 是能解决痛点的最小闭环**，4–6 依次叠加。
 
+### Phase 8 · Agent 指令层 ✅ 8a 已实现（2026-11-05；8b/8c 待做）
+
+见 [`phase8-agent-layer.md`](phase8-agent-layer.md)。
+
+前七个阶段建的是**平台底座**：队列、worktree / Git 生命周期、上下文、消息入口、定时与窗口、
+记账与边界。缺的是跑在底座上的 **Agent 指令** —— 现在没有「Agent」这个概念，一次 `claude -p`
+跑到底，`kind` 只是标签，中途既没有阶段，也没有授权门和证据链。
+
+Phase 8 把它们变成可配置的一等公民：新增 `awaiting_decision` 挂起态、文件化的 `state.json`
+状态机、阶段产物与 Skill、一道新增人工门（另一道复用现有 `approve`），8b 再抽
+`agent_profiles` / `automations` 规则表。**不换 Runtime、不引多 Agent、不做自动批准、默认全关**；
+严格模式只比现在多一次主模型调用，`claim_next` / `requeue` / `recover` 都不用改。
+
+设计依据来自 HiFox 团队两篇 AI-native 实践 —— 它们是**同一个框架的两层**（协作平台底座 /
+单个 Agent 的指令设计），不是两个方案；两篇共同指向的缺口正是这一层。
+
+8a 落地的范围：`awaiting_decision` 挂起态、文件化 `state.json`、内置 `bugfix` Agent 指令、
+两道人工点（新增 `【进入开发】` + 复用 `approve`）、阶段产物校验、`cs stage` 与界面「阶段」页签。
+实现与设计稿的三处偏差见 `phase8-agent-layer.md` 顶部；`agent_profiles` / `automations`、
+PreToolUse 硬拦截、截图证据链仍属 8b / 8c。
+
 ---
 
 ## 10. 验证方式

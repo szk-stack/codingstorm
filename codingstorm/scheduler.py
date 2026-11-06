@@ -15,10 +15,31 @@ import logging
 import signal
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
+from codingstorm.agent_state import (
+    BUILTIN_AGENT_ID,
+    DELIVERY_STAGE,
+    GATE_DEV_TOKEN,
+    GATE_STAGE,
+    StateError,
+    approved_idea_sha,
+    build_initial_instruction,
+    build_resume_instruction,
+    ensure_run_dir,
+    is_authorized,
+    new_state,
+    read_state,
+    run_dir,
+    state_path,
+    validate_delivery,
+    validate_gate,
+    write_state,
+)
 from codingstorm.config import Config
 from codingstorm.context import ContextStore
+from codingstorm.git_ops import Git
 from codingstorm.models import TaskCreate, TaskKind, TaskStatus, WindowOut
 from codingstorm.pricing import PriceTable, Usage
 from codingstorm.runner import (
@@ -347,6 +368,13 @@ class Scheduler:
         outcome = RunOutcome()
         workspace = None
 
+        # Phase 8：strict 且平台启用才走状态机。默认全关，plain 任务一行新逻辑都不碰。
+        strict = task.mode == "strict" and self.config.agents.enabled
+        run_path = (
+            ensure_run_dir(run_dir(self.config.runs_dir, project.name, task_id))
+            if strict else None
+        )
+
         try:
             messages = await self.store.list_messages(task_id)
             last_session = await self.store.last_session_id(task_id) if messages else None
@@ -366,6 +394,21 @@ class Scheduler:
                 )
                 # 只发新这一句 —— 上下文都在会话里，重复注入一遍是浪费
                 prompt = messages[-1].text
+                if strict and run_path is not None:
+                    try:
+                        st = read_state(state_path(run_path), task_id=task_id)
+                    except StateError as exc:
+                        raise StateError(f"状态错误：{exc}") from exc
+                    if st["stage"] == GATE_STAGE and messages[-1].text == GATE_DEV_TOKEN:
+                        # 令牌已由 API 校验并写进 history；用户原文包装成完整续跑指令，
+                        # 不指望 --resume 还记得整套规则。
+                        prompt = build_resume_instruction(
+                            run_path,
+                            st,
+                            token=GATE_DEV_TOKEN,
+                            approved_idea_sha=approved_idea_sha(st) or "",
+                            max_review_rounds=self.config.agents.max_review_rounds,
+                        )
                 session_id = last_session
             else:
                 workspace = await self.workspaces.prepare(
@@ -382,15 +425,30 @@ class Scheduler:
                 )
                 if messages:
                     prompt += f"\n\n---\n\n## 追加说明\n\n{messages[-1].text}"
+                if strict and run_path is not None:
+                    sp = state_path(run_path)
+                    if not sp.exists():
+                        write_state(sp, new_state(task_id, BUILTIN_AGENT_ID))
+                    prompt += "\n\n---\n\n" + build_initial_instruction(
+                        run_path, max_review_rounds=self.config.agents.max_review_rounds
+                    )
                 session_id = str(uuid.uuid4())
 
             # 只更新字段，不重写 status —— claim_next 已经置为 running 了，
             # 在这里再写一次会把并发的 interrupted 覆盖回 running。
+            extra: dict[str, Any] = {}
+            if strict and run_path is not None:
+                extra["state_path"] = str(state_path(run_path))
+                extra["agent_id"] = BUILTIN_AGENT_ID
+                if not resume:
+                    # 续跑时状态仍挂在 gate_dev，不能重置回 init
+                    extra["stage"] = "init"
             await self.store.update_fields(
                 task_id,
                 branch=workspace.branch,
                 worktree_path=str(workspace.path),
                 base_commit=workspace.base_commit,
+                **extra,
             )
             fresh = await self.store.get_task(task_id)
             if fresh is None or fresh.status != TaskStatus.RUNNING:
@@ -407,6 +465,8 @@ class Scheduler:
                 # 上下文目录在 worktree 之外，靠 --add-dir 授权访问 ——
                 # 这样完全不用碰被调度仓库的 .gitignore，也不污染它的历史
                 context_dir=ctx.root,
+                # 严格模式多授权一个运行目录：state.json 与阶段产物都在那儿
+                context_dirs=[ctx.root, run_path] if run_path is not None else None,
                 resume=resume,
             )
         except asyncio.CancelledError:
@@ -450,7 +510,52 @@ class Scheduler:
             log.warning("任务 %s 失败: %s", task_id, reason)
             return
 
-        await self._finalize_success(task_id, task, project.name, workspace)
+        if strict and run_path is not None:
+            await self._finalize_strict(task_id, task, project.name, workspace, run_path)
+        else:
+            await self._finalize_success(task_id, task, project.name, workspace)
+
+    async def _finalize_strict(
+        self, task_id: str, task, project_name: str, workspace, run_path: Path
+    ) -> None:
+        """严格模式收尾：读 state.json 决定挂起还是交付。
+
+        只有交付路径才走 finalize（`git add -A` + rebase）。挂起路径不提交、不沉淀 ——
+        这时还没有产品改动可审，也没有 commit_sha 可给 diff 端点用。
+        """
+        stage = ""
+        try:
+            state = read_state(state_path(run_path), task_id=task_id)
+            stage = state["stage"]
+            if stage == GATE_STAGE:
+                validate_gate(run_path, state, task_id=task_id)
+                # 8a 用事后检测：禁止不一定拦得住，检测一定拦得住。
+                # 8b 再补 PreToolUse hook 做硬拦截。
+                if not await Git(workspace.repo_path).is_clean(cwd=workspace.path):
+                    raise StateError("人工门之前不得修改产品代码：worktree 有未提交改动")
+            elif stage == DELIVERY_STAGE:
+                validate_delivery(run_path, state, task_id=task_id)
+                if not is_authorized(state):
+                    raise StateError("缺少【进入开发】授权记录，不允许交付")
+            else:
+                raise StateError(f"状态机停在非法阶段：{stage}")
+        except StateError as exc:
+            await self.store.set_status(
+                task_id, TaskStatus.FAILED, error_text=f"状态错误：{exc}"
+            )
+            log.warning("任务 %s 状态校验失败：%s", task_id, exc)
+            return
+
+        if stage == GATE_STAGE:
+            # 不写 finished_at（set_status 的完成态集合里没有它）。
+            # _run 返回后 _running 弹出，并发位自然释放；重启后靠磁盘上的 state.json 续跑。
+            await self.store.set_status(
+                task_id, TaskStatus.AWAITING_DECISION, stage=GATE_STAGE
+            )
+            log.info("任务 %s 停在人工门，等待【进入开发】", task_id)
+            return
+
+        await self._finalize_success(task_id, task, project_name, workspace)
 
     async def _finalize_success(self, task_id: str, task, project_name: str, workspace) -> None:
         """提交改动、rebase 到最新 target、置为待审。

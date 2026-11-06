@@ -12,6 +12,9 @@ class TaskStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     AWAITING_REVIEW = "awaiting_review"
+    # 严格模式的人工门：任务没跑完，在等一个明确令牌才继续。
+    # 它不是终态，也不要写 finished_at（挂起不是完成）。
+    AWAITING_DECISION = "awaiting_decision"
     MERGED = "merged"
     DISCARDED = "discarded"
     FAILED = "failed"
@@ -34,7 +37,9 @@ TERMINAL_STATUSES = frozenset(
 )
 
 # 需要人工介入的状态
-ACTIONABLE_STATUSES = frozenset({TaskStatus.AWAITING_REVIEW, TaskStatus.FAILED})
+ACTIONABLE_STATUSES = frozenset(
+    {TaskStatus.AWAITING_REVIEW, TaskStatus.AWAITING_DECISION, TaskStatus.FAILED}
+)
 
 
 class ProjectCreate(BaseModel):
@@ -74,6 +79,9 @@ class TaskCreate(BaseModel):
     body: str = ""
     kind: TaskKind = TaskKind.TASK
     priority: int = 0
+    # Phase 8：默认 plain，严格模式必须显式开启（或由 [agents].strict_kinds 命中的 kind 自动开启）。
+    # `kind` 本身仍然只是标签，不改变执行流程 —— 决定流程的是 mode。
+    mode: Literal["plain", "strict"] = "plain"
 
 
 class TaskMessageIn(BaseModel):
@@ -159,6 +167,26 @@ class TaskOut(BaseModel):
     error_text: str | None = None
     # 由哪条定时任务生成；手工提交的任务为空
     schedule_id: str | None = None
+    # ---- Phase 8 严格模式 ----
+    mode: str = "plain"
+    agent_id: str | None = None
+    stage: str | None = None
+    state_path: str | None = None
+
+
+class StageOut(BaseModel):
+    """严格模式的阶段视图（只读）。状态文件在磁盘上，这份是给界面和 CLI 的。"""
+
+    schema_version: int | None = None
+    agent_id: str | None = None
+    stage: str | None = None
+    waiting_token: str | None = None
+    authorized: bool = False
+    review_rounds: int = 0
+    artifacts: list[dict] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    history: list[dict] = Field(default_factory=list)
+    state_path: str | None = None
 
 
 class ScheduleOut(BaseModel):

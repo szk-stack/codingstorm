@@ -31,3 +31,6 @@ scripts/spike/out/
 
 # 浏览器验收截图
 .shots/
+
+# WorkBuddy 项目数据（本地记忆与工作日志，不进公开仓库）
+.workbuddy/

@@ -159,6 +159,7 @@
         <button class="tab active" data-tab="chat">对话</button>
         <button class="tab" data-tab="output">执行过程</button>
         <button class="tab" data-tab="diff">改动</button>
+        <button class="tab" data-tab="stage">阶段</button>
       </div>
 
       <div class="tabpane" id="pane-chat">
@@ -179,6 +180,10 @@
       <div class="tabpane" id="pane-diff" hidden>
         <div class="diff-stat" id="diff-stat"></div>
         <div class="diff-body" id="diff-body"></div>
+      </div>
+
+      <div class="tabpane" id="pane-stage" hidden>
+        <div id="stage-body"></div>
       </div>
 
       <div class="actions" id="actions"></div>

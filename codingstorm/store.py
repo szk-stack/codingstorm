@@ -7,6 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from codingstorm.agent_state import BUILTIN_AGENT_ID
 from codingstorm.db import Database
 from codingstorm.models import (
     AttemptOut,
@@ -23,7 +24,8 @@ from codingstorm.timing import TimingError, iso_utc, parse_rule
 TASK_FIELDS = (
     "id, project_id, title, body, kind, status, priority, branch, worktree_path,"
     " base_commit, commit_sha, merge_commit_sha, last_event_at,"
-    " created_at, started_at, finished_at, error_text, schedule_id"
+    " created_at, started_at, finished_at, error_text, schedule_id,"
+    " mode, agent_id, stage, state_path"
 )
 
 
@@ -529,8 +531,9 @@ def _insert_task(
     tid = new_id()
     conn.execute(
         "INSERT INTO tasks"
-        " (id, project_id, title, body, kind, status, priority, created_at, schedule_id)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " (id, project_id, title, body, kind, status, priority, created_at, schedule_id,"
+        "  mode, agent_id)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             tid,
             project_id,
@@ -541,6 +544,8 @@ def _insert_task(
             spec.priority,
             utcnow(),
             schedule_id,
+            spec.mode,
+            BUILTIN_AGENT_ID if spec.mode == "strict" else None,
         ),
     )
     row = conn.execute(f"SELECT {TASK_FIELDS} FROM tasks WHERE id = ?", (tid,)).fetchone()

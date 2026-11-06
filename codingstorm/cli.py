@@ -32,6 +32,7 @@ STATUS_LABEL = {
     "queued": "排队中",
     "running": "执行中",
     "awaiting_review": "待审阅",
+    "awaiting_decision": "待决策",
     "merged": "已合并",
     "discarded": "已丢弃",
     "failed": "失败",
@@ -111,9 +112,18 @@ def cmd_submit(args) -> int:
         args.base,
         "POST",
         f"/api/projects/{project['id']}/tasks",
-        {"title": args.title, "body": args.body or "", "kind": args.kind, "priority": args.priority},
+        {
+            "title": args.title,
+            "body": args.body or "",
+            "kind": args.kind,
+            "priority": args.priority,
+            "mode": args.mode,
+        },
     )
     print(f"已入队 {task['id']}（{_status(task)}）：{task['title']}")
+    if args.mode == "strict":
+        print("严格模式：先诊断并给出方案，然后停在人工门等你发【进入开发】")
+        print(f"看阶段： cs stage {task['id']}")
     w = _window(args.base)
     if w["enabled"] and not w["open"]:
         print(f"注意：执行窗口现在关着，要等到 {_local(w['next_open_at'], w['timezone'])} 才会跑")
@@ -149,6 +159,9 @@ def cmd_show(args) -> int:
     print(f"标题   {t['title']}")
     print(f"状态   {_status(t)}")
     print(f"类型   {t['kind']}")
+    if t.get("mode") == "strict":
+        print(f"模式   严格（阶段 {t.get('stage') or '—'}）")
+        print(f"看阶段： cs stage {t['id']}")
     if t.get("branch"):
         print(f"分支   {t['branch']}")
     if t.get("commit_sha"):
@@ -196,6 +209,29 @@ def cmd_diff(args) -> int:
     d = call(args.base, "GET", f"/api/tasks/{t['id']}/diff")
     print(d.get("stat") or "")
     print(d.get("diff") or "（没有改动）")
+    return 0
+
+
+def cmd_stage(args) -> int:
+    """看严格模式任务停在哪、产物齐不齐、等哪个令牌。"""
+    t = _resolve_task(args.base, args.task)
+    d = call(args.base, "GET", f"/api/tasks/{t['id']}/stage")
+    print(f"阶段   {d.get('stage') or '—'}")
+    print(f"Agent  {d.get('agent_id') or '—'}")
+    print(f"评审   {d.get('review_rounds', 0)} 轮   已授权 {'是' if d.get('authorized') else '否'}")
+    arts = d.get("artifacts") or []
+    if arts:
+        print("产物：")
+        for a in arts:
+            print(f"  {a['name']:20s} {a['size']:8d} B")
+    else:
+        print("产物   （还没有）")
+    ev = d.get("evidence") or []
+    if ev:
+        print(f"证据   {', '.join(ev)}")
+    if d.get("waiting_token"):
+        print(f"\n等待令牌   {d['waiting_token']}")
+        print(f'放行命令   cs say {t["id"]} "{d["waiting_token"]}"')
     return 0
 
 
@@ -464,6 +500,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--body", help="详细描述")
     s.add_argument("--kind", default="task", choices=["requirement", "instruction", "bug", "task"])
     s.add_argument("--priority", type=int, default=0)
+    s.add_argument(
+        "--mode", default="plain", choices=["plain", "strict"],
+        help="strict = 诊断/方案后停在人工门，等【进入开发】再实现（需服务端启用 [agents]）",
+    )
     s.set_defaults(func=cmd_submit)
 
     s = sub.add_parser("ls", help="列出任务")
@@ -475,6 +515,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("show", cmd_show, "查看任务详情与用量"),
         ("events", cmd_events, "查看执行过程"),
         ("diff", cmd_diff, "查看改动"),
+        ("stage", cmd_stage, "查看严格模式的阶段与产物"),
         ("approve", cmd_approve, "批准并合入"),
         ("discard", cmd_discard, "丢弃"),
         ("requeue", cmd_requeue, "重新入队"),

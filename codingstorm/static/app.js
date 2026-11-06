@@ -6,6 +6,7 @@ const STATUS_LABEL = {
   queued: '排队中',
   running: '执行中',
   awaiting_review: '待审阅',
+  awaiting_decision: '待决策',
   merged: '已合并',
   discarded: '已丢弃',
   failed: '失败',
@@ -478,7 +479,7 @@ function syncScheduleForm() {
 }
 
 /** 路由形如 #/task/<id> 或 #/task/<id>/diff，便于分享链接和刷新后回到原处。 */
-function parseHash() {  const m = /^#\/task\/([A-Za-z0-9]+)(?:\/(chat|diff|output))?$/.exec(location.hash || '');
+function parseHash() {  const m = /^#\/task\/([A-Za-z0-9]+)(?:\/(chat|diff|output|stage))?$/.exec(location.hash || '');
   return m ? { taskId: m[1], tab: m[2] || 'chat' } : null;
 }
 
@@ -492,8 +493,10 @@ function switchTab(which) {
   $('#pane-chat').hidden = which !== 'chat';
   $('#pane-output').hidden = which !== 'output';
   $('#pane-diff').hidden = which !== 'diff';
+  $('#pane-stage').hidden = which !== 'stage';
   if (which === 'diff' && state.task) loadDiff();
   if (which === 'chat' && state.task) loadChat();
+  if (which === 'stage' && state.task) loadStage();
 }
 
 // ---------------- 任务详情 ----------------
@@ -568,6 +571,9 @@ function renderActions() {
     box.append(el('button', { onclick: () => doApprove() }, '批准并合入'));
     box.append(el('button', { class: 'danger', onclick: () => doDiscard() }, '丢弃'));
     box.append(el('button', { class: 'ghost', onclick: () => loadDiff() }, '刷新改动'));
+  } else if (t.status === 'awaiting_decision') {
+    box.append(el('button', { onclick: () => doGate('【进入开发】') }, '进入开发'));
+    box.append(el('button', { class: 'danger', onclick: () => doDiscard() }, '丢弃'));
   } else if (['failed', 'interrupted', 'cancelled'].includes(t.status)) {
     box.append(el('button', { onclick: () => doRequeue() }, '重新入队'));
     box.append(el('button', { class: 'danger', onclick: () => doDiscard() }, '丢弃'));
@@ -624,6 +630,62 @@ async function doCancel() {
     toast('已取消');
   } catch (err) {
     toast(`取消失败：${err.message}`, true);
+  }
+}
+
+// ---------------- 严格模式阶段 ----------------
+
+async function loadStage() {
+  const t = state.task;
+  const box = $('#stage-body');
+  if (!t || t.mode !== 'strict') {
+    box.replaceChildren(el('div', { class: 'muted', text: '这条任务不是严格模式，没有阶段状态。' }));
+    return;
+  }
+  let d;
+  try {
+    d = await api(`/api/tasks/${t.id}/stage`);
+  } catch (err) {
+    box.replaceChildren(el('div', { class: 'ev-error', text: `读不到阶段：${err.message}` }));
+    return;
+  }
+  box.replaceChildren();
+  for (const [label, value] of [
+    ['阶段', d.stage || '—'],
+    ['Agent', d.agent_id || '—'],
+    ['净室评审', `${d.review_rounds || 0} 轮`],
+    ['人工授权', d.authorized ? '已授权' : '未授权'],
+  ]) {
+    box.append(el('div', { class: 'hint', text: `${label}：${value}` }));
+  }
+  box.append(el('div', { class: 'hint', text: '阶段产物：' }));
+  if (!d.artifacts || !d.artifacts.length) {
+    box.append(el('div', { class: 'muted', text: '（还没有）' }));
+  } else {
+    for (const a of d.artifacts) {
+      box.append(el('div', { class: 'muted', text: `${a.name}  ${a.size} B` }));
+    }
+  }
+  if (d.evidence && d.evidence.length) {
+    box.append(el('div', { class: 'hint', text: `证据：${d.evidence.join('、')}` }));
+  }
+  if (d.waiting_token) {
+    box.append(el('div', { class: 'hint', text: `等待令牌 ${d.waiting_token} —— 自然语言不会解锁。` }));
+    box.append(el('button', { onclick: () => doGate(d.waiting_token) }, '进入开发'));
+  }
+}
+
+async function doGate(token) {
+  try {
+    await api(`/api/tasks/${state.task.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ text: token }),
+    });
+    toast('已放行 —— 接着上一轮会话继续跑');
+    await openTask(state.task.id, 'stage');
+    await loadTasks();
+  } catch (err) {
+    toast(`放行失败：${err.message}`, true);
   }
 }
 
@@ -922,7 +984,7 @@ function refreshFilesIfVisible() {
 
 // ---------------- 对话 ----------------
 
-const FOLLOWABLE = ['awaiting_review', 'failed'];
+const FOLLOWABLE = ['awaiting_review', 'awaiting_decision', 'failed'];
 
 async function loadChat() {
   const t = state.task;
@@ -976,9 +1038,11 @@ function renderChatForm(t) {
   const canFollow = FOLLOWABLE.includes(t.status);
   form.hidden = !canFollow;
   if (!hint || !canFollow) return;
-  hint.textContent = t.status === 'awaiting_review'
-    ? 'AI 会带着前面几轮的上下文接着做，改动累积在同一条分支上'
-    : '带上失败原因让它再试一次';
+  hint.textContent = t.status === 'awaiting_decision'
+    ? '只接受精确令牌【进入开发】；「继续」「可以」不会解锁'
+    : t.status === 'awaiting_review'
+      ? 'AI 会带着前面几轮的上下文接着做，改动累积在同一条分支上'
+      : '带上失败原因让它再试一次';
 }
 
 async function sendFollowup(form) {
@@ -1032,6 +1096,7 @@ function connectWs(taskId) {
         updateRefTabs();
         refreshFilesIfVisible();
         if (msg.task.status === 'awaiting_review') { loadDiff(); loadUsage(msg.task.id); }
+        if (msg.task.status === 'awaiting_decision') { loadStage(); }
         if (msg.task.status === 'merged' || msg.task.status === 'discarded') {
           $('#stream').append(el('div', { class: 'ev ev-init', text: `— 任务${STATUS_LABEL[msg.task.status]} —` }));
         }

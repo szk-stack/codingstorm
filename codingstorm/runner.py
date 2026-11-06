@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import signal
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -143,7 +143,13 @@ class Runner:
     # ---------- 命令行 ----------
 
     def build_command(
-        self, prompt: str, *, session_id: str, context_dir: Path | None, resume: bool = False
+        self,
+        prompt: str,
+        *,
+        session_id: str,
+        context_dir: Path | None,
+        resume: bool = False,
+        context_dirs: Sequence[Path] | None = None,
     ) -> list[str]:
         cfg = self.config
         cmd = [
@@ -170,8 +176,13 @@ class Runner:
             "--disallowed-tools",
             "AskUserQuestion",
         ]
-        if context_dir is not None:
-            cmd += ["--add-dir", str(context_dir)]
+        # Phase 8：严格模式还要授权运行目录（state.json 与阶段产物都在那儿）。
+        # 保留 context_dir 单参数是为了不打破已有调用方；传了 context_dirs 就以它为准。
+        dirs = list(context_dirs) if context_dirs is not None else (
+            [context_dir] if context_dir is not None else []
+        )
+        for d in dirs:
+            cmd += ["--add-dir", str(d)]
         if cfg.claude.settings_file is not None:
             cmd += ["--settings", str(cfg.claude.settings_file)]
         return cmd
@@ -188,6 +199,7 @@ class Runner:
         cwd: Path,
         attempt_no: int,
         context_dir: Path | None = None,
+        context_dirs: Sequence[Path] | None = None,
         origin: str = "task",
         resume: bool = False,
     ) -> RunOutcome:
@@ -197,7 +209,11 @@ class Runner:
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
         cmd = self.build_command(
-            prompt, session_id=session_id, context_dir=context_dir, resume=resume
+            prompt,
+            session_id=session_id,
+            context_dir=context_dir,
+            context_dirs=context_dirs,
+            resume=resume,
         )
         outcome = RunOutcome(session_id=session_id)
 

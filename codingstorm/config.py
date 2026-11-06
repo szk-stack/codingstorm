@@ -12,7 +12,7 @@ DEFAULT_ROOT = Path.home() / "codingstorm"
 
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
-    port: int = 8787
+    port: int = 8788
 
 
 class WindowConfig(BaseModel):
@@ -63,6 +63,18 @@ class ContextConfig(BaseModel):
     journal_prompt_chars: int = Field(default=6000, ge=500)
 
 
+class AgentsConfig(BaseModel):
+    """Phase 8 严格模式。
+
+    `enabled` 默认关 —— 跟执行窗口一个道理：升个版本不能让现有任务突然开始等人点头。
+    `strict_kinds` 只是便利项（`kind` 命中时自动走 strict），任务真正的流程由 `TaskCreate.mode` 决定。
+    """
+
+    enabled: bool = False
+    strict_kinds: list[str] = Field(default_factory=list)
+    max_review_rounds: int = Field(default=6, ge=1, le=20)
+
+
 class ClaudeConfig(BaseModel):
     binary: str = "claude"
     permission_mode: str = "bypassPermissions"
@@ -92,6 +104,7 @@ class Config(BaseModel):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     task: TaskConfig = Field(default_factory=TaskConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
+    agents: AgentsConfig = Field(default_factory=AgentsConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     pricing: PricingConfig = Field(default_factory=PricingConfig)
 
@@ -115,8 +128,20 @@ class Config(BaseModel):
     def logs_dir(self) -> Path:
         return self.root / "logs"
 
+    @property
+    def runs_dir(self) -> Path:
+        """Phase 8 的运行目录：**在 worktree 之外**。
+
+        收尾的 `git add -A` 会把 worktree 里的新文件一起提交进 diff，
+        阶段产物放里面会污染审查视图（Phase 2 已被 __pycache__ 坑过一次）。
+        """
+        return self.root / "runs"
+
     def ensure_dirs(self) -> None:
-        for d in (self.root, self.repos_dir, self.worktrees_dir, self.contexts_dir, self.logs_dir):
+        for d in (
+            self.root, self.repos_dir, self.worktrees_dir,
+            self.contexts_dir, self.logs_dir, self.runs_dir,
+        ):
             d.mkdir(parents=True, exist_ok=True)
 
     def task_log_path(self, project: str, task_id: str) -> Path:

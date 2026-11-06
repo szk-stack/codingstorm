@@ -55,7 +55,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     finished_at       TEXT,
     error_text        TEXT,
     -- 由哪条定时任务生成；手工提交的任务为 NULL
-    schedule_id       TEXT
+    schedule_id       TEXT,
+    -- Phase 8 严格模式。mode 默认 plain；agent_id / stage / state_path 由调度器首次执行时写入
+    mode              TEXT NOT NULL DEFAULT 'plain',
+    agent_id          TEXT,
+    stage             TEXT,
+    state_path        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_queue
     ON tasks (project_id, status, priority DESC, created_at);
@@ -137,6 +142,10 @@ _SENTINEL = object()
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("tasks", "schedule_id", "TEXT"),
     ("projects", "window_override", "TEXT"),
+    ("tasks", "mode", "TEXT NOT NULL DEFAULT 'plain'"),
+    ("tasks", "agent_id", "TEXT"),
+    ("tasks", "stage", "TEXT"),
+    ("tasks", "state_path", "TEXT"),
 )
 
 

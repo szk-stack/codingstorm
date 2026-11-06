@@ -12,7 +12,7 @@ root = "~/codingstorm"
 [server]
 # 默认只监听本机。要远程访问请自己加反向代理或改这里。
 host = "127.0.0.1"
-port = 8787
+port = 8788
 
 [scheduler]
 # 全局并发上限。**由内存决定** —— 每个 Claude Code 进程约 200-400MB，
@@ -70,6 +70,18 @@ sediment = true
 sediment_max_diff_bytes = 24576
 # 注入 prompt 的变更记录上限。它会一直增长，全量塞进去迟早挤爆上下文。
 journal_prompt_chars = 6000
+
+# ---- Phase 8 · 严格模式 ----
+# 默认全关 —— 升个版本不能让现有任务突然开始等人点头。
+# 开启后，只有 `cs submit --mode strict`（或 kind 命中 strict_kinds）的任务走状态机：
+# 先诊断并给出方案，停在「待决策」，等人发【进入开发】才允许改产品代码。
+[agents]
+enabled = false
+# 哪些 kind 自动走严格模式；空 = 全靠显式 --mode strict。
+# 注意 kind 本身仍只是标签，真正决定执行流程的是任务的 mode。
+strict_kinds = []
+# 净室评审最多几轮；超过仍有阻断问题就停下等人工。
+max_review_rounds = 6
 
 [pricing]
 # 价目表。**不填的话成本留空** —— `total_cost_usd` 是按另一端价目算的，不能用。

@@ -4,12 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
+from codingstorm.agent_state import (
+    GATE_DEV_TOKEN,
+    StateError,
+    describe,
+    file_sha,
+    is_authorized,
+    read_state,
+    record_gate,
+    validate_delivery,
+    validate_gate,
+    write_state,
+)
 from codingstorm.context import POINTER_SOFT_LIMIT_BYTES
 from codingstorm.diff_render import render_diff
 from codingstorm.git_ops import Git, GitError
@@ -26,6 +39,7 @@ from codingstorm.models import (
     ScheduleCreate,
     ScheduleOut,
     ScheduleUpdate,
+    StageOut,
     TaskCreate,
     TaskMessageIn,
     TaskMessageOut,
@@ -132,6 +146,17 @@ async def create_task(request: Request, project_id: str, spec: TaskCreate) -> Ta
     if project is None:
         raise HTTPException(404, "项目不存在")
     await _require_repo_ready(project)
+
+    # Phase 8：mode 决定流程，kind 仍然只是标签。strict_kinds 只是便利项。
+    cfg = request.app.state.config
+    mode = spec.mode
+    if mode == "plain" and str(spec.kind) in cfg.agents.strict_kinds:
+        mode = "strict"
+    if mode == "strict" and not cfg.agents.enabled:
+        raise HTTPException(
+            400, "严格模式未启用：在 codingstorm.toml 里设 [agents] enabled = true"
+        )
+    spec = spec.model_copy(update={"mode": mode})
     return await store.create_task(project_id, spec)
 
 
@@ -212,7 +237,25 @@ async def add_task_message(request: Request, task_id: str, spec: TaskMessageIn) 
     task = await store.get_task(task_id)
     if task is None:
         raise HTTPException(404, "任务不存在")
-    if task.status not in (TaskStatus.AWAITING_REVIEW, TaskStatus.FAILED):
+    if task.status == TaskStatus.AWAITING_DECISION:
+        # 自然语言不解锁。「继续」「可以」「按这个做」以及带空格的变体一律拒绝 ——
+        # 令牌校验在服务端，不写进 prompt 求模型自觉。
+        if spec.text != GATE_DEV_TOKEN:
+            raise HTTPException(409, "待决策任务只接受精确令牌【进入开发】，自然语言不解锁")
+        if not task.state_path:
+            raise HTTPException(409, "任务缺少状态文件，不能放行")
+        sp = Path(task.state_path)
+        try:
+            st = read_state(sp, task_id=task.id)
+            validate_gate(sp.parent, st, task_id=task.id)
+            declared = st.get("artifacts", {}).get("idea.md")
+            actual = file_sha(sp.parent / "idea.md")
+            if declared and declared != actual:
+                raise StateError("已批准的 idea.md 与状态文件记录的哈希不一致")
+            write_state(sp, record_gate(st, token=GATE_DEV_TOKEN, approved_idea_sha=actual))
+        except StateError as exc:
+            raise HTTPException(409, f"状态错误：{exc}") from exc
+    elif task.status not in (TaskStatus.AWAITING_REVIEW, TaskStatus.FAILED):
         raise HTTPException(409, f"任务状态为 {task.status}，只有待审阅或失败的任务能继续")
 
     await store.add_message(task_id, spec.text)
@@ -220,6 +263,25 @@ async def add_task_message(request: Request, task_id: str, spec: TaskMessageIn) 
     refreshed = await store.get_task(task_id)
     assert refreshed is not None
     return refreshed
+
+
+@router.get("/tasks/{task_id}/stage", response_model=StageOut)
+async def get_task_stage(request: Request, task_id: str) -> StageOut:
+    """严格模式的阶段视图。状态文件在磁盘上，这里只读，不做任何迁移。"""
+    store = _store(request)
+    task = await store.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, "任务不存在")
+    if task.mode != "strict":
+        raise HTTPException(409, "这条任务不是严格模式")
+    if not task.state_path:
+        raise HTTPException(404, "还没有状态文件（任务尚未开始执行）")
+    sp = Path(task.state_path)
+    try:
+        st = read_state(sp, task_id=task.id)
+    except StateError as exc:
+        raise HTTPException(409, f"状态错误：{exc}") from exc
+    return StageOut(**describe(sp.parent, st))
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=TaskOut)
@@ -303,6 +365,19 @@ async def approve_task(request: Request, task_id: str) -> TaskOut:
     if task.status != TaskStatus.AWAITING_REVIEW:
         raise HTTPException(409, f"任务状态为 {task.status}，只有待审的任务能批准")
 
+    # 严格模式的第二道门就是现有的 approve，但要先确认交付产物齐全。
+    if task.mode == "strict":
+        if not task.state_path:
+            raise HTTPException(409, "严格模式任务缺少状态文件，不能批准")
+        sp = Path(task.state_path)
+        try:
+            st = read_state(sp, task_id=task.id)
+            validate_delivery(sp.parent, st, task_id=task.id)
+            if not is_authorized(st):
+                raise StateError("缺少【进入开发】授权记录")
+        except StateError as exc:
+            raise HTTPException(409, f"状态错误：{exc}") from exc
+
     wm = request.app.state.workspaces
     raw = await store.get_task_raw(task_id)
     try:
@@ -333,11 +408,22 @@ async def discard_task(request: Request, task_id: str) -> TaskOut:
     task = await store.get_task(task_id)
     if task is None:
         raise HTTPException(404, "任务不存在")
-    if task.status not in (TaskStatus.AWAITING_REVIEW, TaskStatus.FAILED, TaskStatus.INTERRUPTED):
+    if task.status not in (
+        TaskStatus.AWAITING_REVIEW,
+        TaskStatus.AWAITING_DECISION,
+        TaskStatus.FAILED,
+        TaskStatus.INTERRUPTED,
+    ):
         raise HTTPException(409, f"任务状态为 {task.status}，不能丢弃")
 
     if workspace is not None:
         await request.app.state.workspaces.cleanup(workspace, delete_branch=True)
+    # 运行目录在 worktree 之外，不跟着 git 清理走，得单独删。
+    # 只删 runs_dir 下面的 —— 一条脏 state_path 不该让 rmtree 指到别处去。
+    if task.state_path:
+        run_path = Path(task.state_path).parent
+        if run_path.is_relative_to(request.app.state.config.runs_dir):
+            shutil.rmtree(run_path, ignore_errors=True)
     await store.set_status(task_id, TaskStatus.DISCARDED)
 
     refreshed = await store.get_task(task_id)

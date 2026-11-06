@@ -9,9 +9,13 @@
 <body>
 
 <header class="topbar">
-  <h1>codingstorm</h1>
+  <div class="brand">
+    <h1>codingstorm</h1>
+    <span class="sub">AI 任务队列</span>
+  </div>
+  <div class="topbar-spacer"></div>
   <div class="topbar-right">
-    <span id="conn" class="conn">未连接</span>
+    <span id="conn" class="conn">待命</span>
   </div>
 </header>
 
@@ -19,23 +23,30 @@
 
   <aside class="sidebar">
     <section class="panel">
-      <h2>项目</h2>
+      <div class="nav-label">项目</div>
       <ul id="projects" class="list"></ul>
-      <form id="project-form" class="inline-form">
-        <input name="name" placeholder="项目名" required pattern="[A-Za-z0-9._-]+">
-        <input name="repo_path" placeholder="仓库路径（留空则自动新建）">
-        <input name="target_branch" placeholder="主干分支" value="main">
-        <button type="submit">注册</button>
-      </form>
+      <details class="disclosure">
+        <summary>注册项目</summary>
+        <form id="project-form" class="inline-form">
+          <input name="name" placeholder="项目名" required pattern="[A-Za-z0-9._-]+">
+          <input name="repo_path" placeholder="仓库路径（留空自动新建）">
+          <input name="target_branch" placeholder="主干分支" value="main">
+          <select name="runtime" title="执行器">
+            <option value="">执行器：跟随全局</option>
+            <option value="claude">Claude Code</option>
+            <option value="pi">Pi</option>
+          </select>
+          <button type="submit">注册</button>
+        </form>
+      </details>
     </section>
 
     <section class="panel" id="context-panel" hidden>
-      <div class="panel-head">
-        <h2>项目上下文</h2>
-        <span id="ctx-bytes" class="muted"></span>
-      </div>
-      <div class="tabs small">
-        <button class="ctab active" data-ctab="pointer">指针图</button>
+      <div class="nav-label">项目上下文 <span class="count" id="ctx-bytes"></span></div>
+      <details class="disclosure ctx-disclosure">
+        <summary>展开编辑约定与文档</summary>
+        <div class="tabs small">
+          <button class="ctab active" data-ctab="pointer">指针图</button>
         <button class="ctab" data-ctab="journal">变更记录</button>
         <button class="ctab" data-ctab="docs">文档</button>
         <button class="ctab" data-ctab="files">文件</button>
@@ -44,7 +55,7 @@
       <div id="ctx-pointer">
         <p class="hint">
           每次任务无条件注入。只写四类内容：带参数的命令、非显然约束、
-          专有工具用法、硬规则。<b>不要写「项目是做什么的」</b>——实测会拖低表现。
+          专有工具用法、硬规则。<b>不要写「项目是做什么的」</b> —— AI 读代码就知道。
           注释不会占 token。
         </p>
         <textarea id="pointer-text" rows="10" spellcheck="false"></textarea>
@@ -82,6 +93,7 @@
         <div id="file-crumbs" class="crumbs"></div>
         <div id="file-tree" class="tree"></div>
       </div>
+      </details>
     </section>
   </aside>
 
@@ -91,6 +103,7 @@
     <div class="panel" id="queue-panel">
       <div class="panel-head">
         <h2 id="queue-title">任务队列</h2>
+        <span id="queue-summary" class="head-sub"></span>
         <span id="queue-count" class="muted"></span>
       </div>
       <ul id="tasks" class="list tasks"></ul>
@@ -99,6 +112,7 @@
     <div class="panel" id="schedule-panel">
       <div class="panel-head">
         <h2>定时任务</h2>
+        <span class="head-sub">到点自动入队，产出仍要人工审</span>
         <span id="schedule-count" class="muted"></span>
         <button id="schedule-new" class="ghost">新建</button>
       </div>
@@ -149,7 +163,7 @@
     <div class="panel" id="detail-panel" hidden>
       <div class="panel-head">
         <h2 id="detail-title">任务详情</h2>
-        <span id="detail-status" class="badge"></span>
+        <span id="detail-status"></span>
       </div>
 
       <div class="detail-meta" id="detail-meta"></div>
@@ -173,7 +187,8 @@
         </form>
       </div>
 
-      <div class="tabpane" id="pane-output" hidden>        <div class="progress" id="progress" hidden></div>
+      <div class="tabpane" id="pane-output" hidden>
+        <div class="progress" id="progress" hidden></div>
         <div class="stream" id="stream"></div>
       </div>
 

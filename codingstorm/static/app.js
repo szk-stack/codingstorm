@@ -119,19 +119,26 @@ function renderProjects() {
   ul.replaceChildren();
 
   if (!state.projects.length) {
-    ul.append(el('li', { class: 'muted', text: '还没有项目，先在下面注册一个' }));
+    ul.append(el('li', { class: 'empty' },
+      el('div', { class: 'empty-title', text: '还没有项目' }),
+      el('div', { class: 'empty-sub', text: '展开「注册项目」填个名字就行，仓库会自动建好。' })));
     return;
   }
   for (const p of state.projects) {
     ul.append(el('li', {
       class: p.id === state.projectId ? 'active' : '',
       onclick: () => selectProject(p.id),
-    }, el('div', { text: p.name }), el('div', { class: 'muted', text: p.target_branch })));
+    },
+      el('span', { class: 'proj-glyph', text: p.name.slice(0, 1).toUpperCase() }),
+      el('div', { text: p.name }),
+      el('div', { class: 'muted', text: [p.target_branch, p.runtime].filter(Boolean).join(' · ') })));
   }
 }
 
 async function createProject(form) {
   const data = Object.fromEntries(new FormData(form));
+  // 「跟随全局」提交的是空串，交给服务端当 null 处理也没问题，但别把空字段塞进请求
+  if (!data.runtime) delete data.runtime;
   try {
     const p = await api('/api/projects', { method: 'POST', body: JSON.stringify(data) });
     form.reset();
@@ -168,13 +175,29 @@ async function loadTasks() {
   renderTasks();
 }
 
+const KIND_LABEL = { requirement: '需求', instruction: '指令', bug: '缺陷', task: '其他' };
+
 function renderTasks() {
   const ul = $('#tasks');
   ul.replaceChildren();
-  $('#queue-count').textContent = state.tasks.length ? `${state.tasks.length} 条` : '';
+  const total = state.tasks.length;
+  $('#queue-count').textContent = total ? `${total} 条` : '';
 
-  if (!state.tasks.length) {
-    ul.append(el('li', { class: 'muted', text: '队列为空' }));
+  const counts = { queued: 0, running: 0, pending: 0 };
+  for (const t of state.tasks) {
+    if (t.status === 'queued') counts.queued++;
+    else if (t.status === 'running') counts.running++;
+    else if (t.status === 'awaiting_review' || t.status === 'awaiting_decision') counts.pending++;
+  }
+  $('#queue-summary').textContent = total
+    ? `${counts.queued} 排队 · ${counts.running} 执行中 · ${counts.pending} 等你处理`
+    : '';
+
+  if (!total) {
+    ul.append(el('li', { class: 'empty' },
+      el('div', { class: 'empty-title', text: '队列是空的' }),
+      el('div', { class: 'empty-sub', text: '在下面写一句话描述要做什么，提交后立刻返回，AI 会在独立分支上跑完等你审改动。' }),
+      el('div', { class: 'empty-sub' }, '命令行也可以：', el('code', { text: 'cs submit <项目> "<标题>"' }))));
     return;
   }
   // 窗口关着时排队中的任务一条都跑不了。不标出来的话，看起来就像卡死了
@@ -182,20 +205,23 @@ function renderTasks() {
 
   for (const t of state.tasks) {
     if (state.task && state.task.id === t.id) {
-      const fresh = state.task;
-      Object.assign(t, { status: fresh.status });
+      Object.assign(t, { status: state.task.status });
     }
-    const title = el('span', { class: 'title', text: t.title });
-    if (waiting && t.status === 'queued') {
-      title.append(el('span', { class: 'muted small', text: ' · 等窗口' }));
-    }
+    const sub = [KIND_LABEL[t.kind] || t.kind];
+    if (t.mode === 'strict') sub.push('严格模式');
+    if (waiting && t.status === 'queued') sub.push('等窗口');
+    const subNodes = [el('span', { text: sub[0] })];
+    for (const s of sub.slice(1)) subNodes.push(el('span', { class: 'dot', text: s }));
+
     ul.append(el('li', {
       class: state.task && state.task.id === t.id ? 'active' : '',
       onclick: () => openTask(t.id),
     },
       badge(t.status),
-      title,
-    ));
+      el('div', { class: 'task-main' },
+        el('div', { class: 'title', text: t.title }),
+        el('div', { class: 'task-sub' }, subNodes)),
+      el('span', { class: 'task-time', text: fmtLocal(t.created_at) })));
   }
 }
 
@@ -552,8 +578,9 @@ function renderDetail() {
   ];
   for (const [label, value, mono] of rows) {
     if (!value) continue;
-    meta.append(el('span', {}, `${label}：`,
-      mono ? el('code', { text: value }) : document.createTextNode(value)));
+    meta.append(el('span', { class: 'meta-item' },
+      el('span', { class: 'meta-key', text: label }),
+      mono ? el('code', { text: value }) : el('span', { text: value })));
   }
   if (t.error_text) {
     meta.append(el('span', { class: 'ev-error', text: t.error_text }));
@@ -639,7 +666,9 @@ async function loadStage() {
   const t = state.task;
   const box = $('#stage-body');
   if (!t || t.mode !== 'strict') {
-    box.replaceChildren(el('div', { class: 'muted', text: '这条任务不是严格模式，没有阶段状态。' }));
+    box.replaceChildren(el('div', { class: 'empty' },
+      el('div', { class: 'empty-title', text: '这条任务不是严格模式' }),
+      el('div', { class: 'empty-sub', text: '用 --mode strict 提交的缺陷任务，才有阶段状态、产物清单和人工门。' })));
     return;
   }
   let d;
@@ -650,28 +679,36 @@ async function loadStage() {
     return;
   }
   box.replaceChildren();
-  for (const [label, value] of [
-    ['阶段', d.stage || '—'],
+
+  const cards = [
+    ['当前阶段', d.stage || '—'],
     ['Agent', d.agent_id || '—'],
     ['净室评审', `${d.review_rounds || 0} 轮`],
     ['人工授权', d.authorized ? '已授权' : '未授权'],
-  ]) {
-    box.append(el('div', { class: 'hint', text: `${label}：${value}` }));
-  }
-  box.append(el('div', { class: 'hint', text: '阶段产物：' }));
-  if (!d.artifacts || !d.artifacts.length) {
-    box.append(el('div', { class: 'muted', text: '（还没有）' }));
-  } else {
-    for (const a of d.artifacts) {
-      box.append(el('div', { class: 'muted', text: `${a.name}  ${a.size} B` }));
-    }
-  }
+  ];
+  box.append(el('div', { class: 'stage-grid' }, cards.map(([k, v]) =>
+    el('div', { class: 'stage-card' },
+      el('div', { class: 'k', text: k }),
+      el('div', { class: 'v', text: v })))));
+
+  box.append(el('div', { class: 'stage-section-title', text: '阶段产物' }));
+  const chips = (d.artifacts || []).map((a) =>
+    el('span', { class: 'artifact-chip' },
+      el('span', { text: a.name }),
+      el('span', { class: 'sz', text: `${a.size} B` })));
+  box.append(el('div', { class: 'artifact-list' },
+    chips.length ? chips : [el('span', { class: 'muted', text: '（还没有）' })]));
+
   if (d.evidence && d.evidence.length) {
-    box.append(el('div', { class: 'hint', text: `证据：${d.evidence.join('、')}` }));
+    box.append(el('div', { class: 'stage-section-title', text: '验证证据' }));
+    box.append(el('div', { class: 'artifact-list' },
+      d.evidence.map((e) => el('span', { class: 'artifact-chip', text: e }))));
   }
   if (d.waiting_token) {
-    box.append(el('div', { class: 'hint', text: `等待令牌 ${d.waiting_token} —— 自然语言不会解锁。` }));
-    box.append(el('button', { onclick: () => doGate(d.waiting_token) }, '进入开发'));
+    box.append(el('div', { class: 'gate-note' },
+      el('span', { text: '等待人工放行 · 只认精确令牌' }),
+      el('span', { class: 'token', text: d.waiting_token }),
+      el('button', { onclick: () => doGate(d.waiting_token) }, '进入开发')));
   }
 }
 
@@ -707,7 +744,8 @@ function renderUsage(attempts) {
   const lines = [];
   let total = null;
   for (const a of attempts) {
-    const label = a.origin === 'sediment' ? '记录沉淀' : '执行任务';
+    const who = a.runtime ? ` · ${a.runtime}` : '';
+    const label = (a.origin === 'sediment' ? '记录沉淀' : '执行任务') + who;
     const cost = a.cost_usd != null ? `  $${a.cost_usd.toFixed(4)}` : '';
     if (a.cost_usd != null) total = (total ?? 0) + a.cost_usd;
     lines.push(
@@ -1124,7 +1162,7 @@ function connectWs(taskId) {
 
 function setConn(on) {
   const c = $('#conn');
-  c.textContent = on ? '已连接' : '未连接';
+  c.textContent = on ? '实时同步' : '连接已断开';
   c.className = `conn ${on ? 'on' : 'off'}`;
 }
 
@@ -1304,7 +1342,7 @@ function init() {
   // 任务提交表单挂在详情面板上方（动态建，避免 HTML 里重复一份）
   const form = el('form', { class: 'inline-form', id: 'task-form' },
     el('textarea', { name: 'title', rows: '2', placeholder: '描述要做的事，比如：给 stats.py 加一个 mode 函数', required: true }),
-    el('div', { style: 'display:flex;gap:6px' },
+    el('div', { class: 'row' },
       el('select', { name: 'kind' },
         el('option', { value: 'requirement' }, '需求'),
         el('option', { value: 'instruction' }, '指令'),

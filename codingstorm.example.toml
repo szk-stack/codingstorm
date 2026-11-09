@@ -166,8 +166,8 @@ guard_allow = []
 # ---- 对话式助手 ----
 # 顶栏「助手」页里那个能用自然语言提需求的聊天窗口。
 #
-# 它是**独立进程**（仓库外的 codingstorm-assistant 目录），主服务只负责探测和
-# 按需拉起；崩了不影响任务队列，重启任务队列也不会打断正在写的那轮对话。
+# 它是**独立进程**（仓库里的 `assistant/` 目录，不是另一个项目），主服务只负责
+# 探测和按需拉起；崩了不影响任务队列，重启任务队列也不会打断正在写的那轮对话。
 # 助手的工具白名单只有四个：list_projects / create_task / get_project_context /
 # list_tasks —— 它能建任务，但不能改代码、不碰 shell，也不等待任务执行。
 [assistant]
@@ -176,8 +176,10 @@ enabled = true
 url = "http://127.0.0.1:8001"
 # 让主服务在启动时顺手把它拉起来。关掉就自己跑 start-assistant.bat。
 autostart = false
-# 助手代码所在目录（里面要有 server.py）。
-# dir = "D:/project/codingstorm-assistant"
+# 助手代码所在目录（里面要有 server.py）。**留空 = 自动用仓库里的 assistant/**，
+# 因为位置是按源码相对路径算的，项目换盘符/换机器都不用改。
+# 只有用 wheel 安装（不含 assistant/）或把助手放到别处时才要显式写：
+# dir = "D:/project/codingstorm/assistant"
 # 留空 = 用当前解释器跑（助手只用标准库，不用另装依赖）
 # python = ""
 # 留空 = 复用 [claude.env] 的 ANTHROPIC_AUTH_TOKEN（同一家供应商时省事）。

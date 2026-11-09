@@ -45,3 +45,7 @@ api_key.json
 
 # 本地测试产物：testcode/code1 自带一份嵌套 .git，add 进来会变成 gitlink
 /testcode/
+
+# 助手 sidecar 的本地配置：双保险（其余忽略规则见 assistant/.gitignore）。
+# 这个文件可能放 API Key，即使子目录的 .gitignore 被删也不能进仓库。
+/assistant/config.py

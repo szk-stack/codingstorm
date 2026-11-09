@@ -62,10 +62,23 @@ class AssistantSupervisor:
     def log_path(self) -> Path:
         return self.config.logs_dir / "assistant.log"
 
+    @property
+    def bundled_dir(self) -> Path:
+        """仓库里自带的助手目录（与 `codingstorm/` 包同级）。
+
+        源码树：`.../codingstorm/assistant.py` → 上一级是仓库根 → `assistant/`。
+        wheel 安装时这里不存在（打包只含 `codingstorm` 包），会退回要求显式配 dir。
+        """
+        return Path(__file__).resolve().parent.parent / "assistant"
+
     def _resolve_dir(self) -> Path | None:
-        if self.cfg.dir is None:
-            return None
-        return self.cfg.dir.expanduser()
+        # 显式配置优先（外部部署 / 想把助手放在别处时仍然可用）
+        if self.cfg.dir is not None:
+            return self.cfg.dir.expanduser()
+        # 没配就找仓库里自带的那份 —— 用相对位置而不是硬编码绝对路径，
+        # 整个项目换盘符 / 换机器都不用改配置
+        bundled = self.bundled_dir
+        return bundled if (bundled / "server.py").exists() else None
 
     # ---------------- 探测 ----------------
 
@@ -86,7 +99,10 @@ class AssistantSupervisor:
             message = "助手已在配置里关闭（[assistant] enabled = false）"
         elif not running:
             if target is None:
-                message = "还没配置 [assistant] dir，无法自动启动助手"
+                message = (
+                    "找不到助手目录：仓库里没有 assistant/server.py，"
+                    "也没配置 [assistant] dir"
+                )
             elif not (target / "server.py").exists():
                 message = f"助手目录里没有 server.py：{target}"
             elif self._last_error:
@@ -117,7 +133,10 @@ class AssistantSupervisor:
 
         target = self._resolve_dir()
         if target is None:
-            return False, "还没配置 [assistant] dir（助手代码所在目录）"
+            return False, (
+                "找不到助手目录：仓库里没有 assistant/server.py，"
+                "也没配置 [assistant] dir"
+            )
         if not (target / "server.py").exists():
             return False, f"助手目录里没有 server.py：{target}"
 

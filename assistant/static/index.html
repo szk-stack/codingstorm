@@ -1,0 +1,3211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>codingstorm · 需求助手</title>
+<style>
+  /* ============================================================
+     设计 token 体系（myWheel 的设计地基 · "纸墨"版）
+     ------------------------------------------------------------
+     两层结构（大厂设计系统的标准做法）：
+       ① 原始层（--n / --p / --d / --s / --w / --y）：色板的字面值，
+          只在本块出现；每个值都经过 WCAG 对比度验证（见注释）。
+       ② 语义层（--bg- / --text- / --border- / --accent…）：按用途命名，
+          全站样式只消费语义层。
+     两个好处：换色调只改本块（原始层）；将来做深色模式，只需在这里
+     重定义语义层——所以现在就预留了结构。
+     色板基调：暖中性（纸）+ 蓝黑墨水（主色）+ 朱砂（警示）——
+     偏暖的"纸墨"质感；全部用 OKLCH 定义（感知均匀的现代色彩空间）。
+     ============================================================ */
+  :root {
+    /* ---- ① 原始层：色板 ---- */
+    /* 暖中性：纸 → 墨（hue 80，微暖） */
+    --n50:  oklch(0.985 0.005 80);   /* #fcfaf6 亮纸（卡面）*/
+    --n100: oklch(0.965 0.008 80);   /* #f6f3ee 纸（页面底）*/
+    --n150: oklch(0.945 0.010 80);   /* #f0ece5 浅底（便签/悬浮）*/
+    --n200: oklch(0.920 0.012 80);   /* #e9e4dc 深底（凹槽/悬浮加深）*/
+    --n300: oklch(0.875 0.015 80);   /* #dbd5cb 默认边框 */
+    --n400: oklch(0.640 0.022 80);   /* #938b7d 强边框（≥3:1）*/
+    --n500: oklch(0.540 0.025 80);   /* #766d5f 辅助文字（≥4.5:1）*/
+    --n600: oklch(0.460 0.022 80);   /* #5f574a 次级文字（≥6:1）*/
+    --n700: oklch(0.380 0.020 80);   /* #484137 */
+    --n800: oklch(0.300 0.018 80);   /* #332d24 主文字（≥12:1）*/
+    /* 主色：蓝黑墨水（hue 255） */
+    --p600: oklch(0.420 0.085 255);  /* #2b4e7a 主操作/链接（底上白字 ≥8:1）*/
+    --p700: oklch(0.350 0.075 255);  /* #1d3b61 加深（悬浮态）*/
+    --p100: oklch(0.930 0.025 255);  /* #dde9f9 主色浅底 */
+    --p200: oklch(0.865 0.045 255);  /* #bfd5f0 主色浅边 */
+    /* 危险：朱砂（hue 30） */
+    --d600: oklch(0.520 0.140 30);   /* #ab4235 错误（≥4.5:1）*/
+    --d100: oklch(0.945 0.025 30);   /* #fde7e3 错误浅底 */
+    --d200: oklch(0.880 0.045 30);   /* #f4cdc6 错误浅边 */
+    /* 成功：松绿（hue 150） */
+    --s600: oklch(0.520 0.100 150);  /* #397949 */
+    /* 警告：赭黄（hue 70） */
+    --w600: oklch(0.600 0.110 70);   /* #aa732b */
+    --w100: oklch(0.950 0.030 70);   /* #fcecd9 警告浅底 */
+    /* 系统：黛紫（hue 300，"系统自发动作"专用：压缩 / 子代理） */
+    --y600: oklch(0.480 0.070 300);  /* #64547f */
+    --y300: oklch(0.780 0.060 300);  /* #bdafd9 */
+    --y200: oklch(0.870 0.040 300);  /* #d8cfeb */
+    --y100: oklch(0.940 0.020 300);  /* #ede8f7 */
+
+    /* ---- ② 语义层（全站只消费这一层） ---- */
+    /* 背景 / 表面 */
+    --bg-page: var(--n100);              /* 页面底 */
+    --bg-surface: var(--n50);            /* 主面：侧栏/标题/输入区/弹层/气泡 */
+    --bg-subtle: var(--n150);            /* 浅底：便签卡/列表悬浮 */
+    --bg-hover: var(--n200);             /* 悬浮加深 */
+    --bg-sunken: var(--n200);            /* 凹槽（进度条轨道）*/
+    --bg-accent-soft: var(--p100);       /* 主色浅底：选中 / 按钮悬浮 / 禁用 */
+    --bg-system-soft: var(--y100);       /* 系统浅底：压缩卡 / 子代理 */
+    --bg-system-hover: var(--y200);      /* 系统浅底·悬浮 */
+    --bg-danger-soft: var(--d100);       /* 错误浅底 */
+    /* 文字 */
+    --text-primary: var(--n800);         /* 主文字 */
+    --text-secondary: var(--n600);       /* 次级文字 */
+    --text-muted: var(--n500);           /* 辅助文字（旧 #888/#999 统一升级到 ≥4.5:1）*/
+    --text-on-accent: var(--n50);        /* 主色底上的文字 */
+    --text-system: var(--y600);          /* 系统紫文字 */
+    /* 边框 */
+    --border: var(--n300);               /* 默认边框 / 分割线 */
+    --border-strong: var(--n400);        /* 控件边框：输入框 / 弹层（≥3:1）*/
+    --border-system: var(--y200);        /* 系统卡边框 */
+    --border-system-strong: var(--y300); /* 系统强调条 */
+    --border-danger: var(--d200);
+    /* 主色与状态 */
+    --accent: var(--p600);
+    --accent-strong: var(--p700);
+    --danger: var(--d600);
+    --warning: var(--w600);
+    --success: var(--s600);
+
+    /* ---- ③ 排版 ---- */
+    --font-sans: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-mono: Consolas, "Courier New", monospace;
+    --fs-xs: 12px;    /* 辅助 / 卡片小字 */
+    --fs-sm: 13px;    /* 次要 */
+    --fs-md: 14px;    /* 列表 / 按钮默认 */
+    --fs-lg: 15px;    /* 正文 / 消息 */
+    --fs-xl: 16px;    /* 小标题 */
+    --fs-2xl: 18px;   /* 标题 */
+    --lh-tight: 1.4;
+    --lh-base: 1.6;
+    --lh-relaxed: 1.8;
+
+    /* ---- ④ 间距（4px 网格） ---- */
+    --sp-1: 4px;
+    --sp-2: 8px;
+    --sp-3: 12px;
+    --sp-4: 16px;
+    --sp-5: 20px;
+    --sp-6: 24px;
+
+    /* ---- ⑤ 圆角与阴影 ---- */
+    --r-xs: 4px;      /* 气泡"尾巴角" */
+    --r-sm: 6px;      /* 小按钮 */
+    --r-md: 10px;     /* 卡片 / 输入框 / 菜单 */
+    --r-lg: 14px;     /* 消息气泡 */
+    --r-full: 999px;  /* 胶囊 */
+    --shadow-sm: 0 1px 2px rgba(51, 45, 36, 0.06);     /* 墨色微影 */
+    --shadow-pop: 0 4px 16px rgba(51, 45, 36, 0.14);   /* 弹层投影 */
+
+    /* ---- ⑥ 动效 ---- */
+    --ease-out: cubic-bezier(0.25, 1, 0.5, 1);   /* 快出缓收（指数缓动）*/
+    --dur-fast: 0.15s;
+    --dur-base: 0.25s;
+  }
+
+  /* ================= 页面基础 ================= */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--font-sans);
+    display: flex;          /* ★ 左右两栏布局：左侧对话列表 + 右侧聊天区 */
+    overflow: hidden;
+    background: var(--bg-page);
+  }
+
+  /* ================= 左侧栏：对话列表 ================= */
+  #sidebar {
+    width: 240px;
+    flex-shrink: 0;
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+  }
+  #newBtn {
+    margin: var(--sp-4) var(--sp-3);
+    padding: var(--sp-3);
+    border: 1px solid var(--accent);
+    border-radius: var(--r-md);
+    background: var(--bg-surface);
+    color: var(--accent);
+    font-size: var(--fs-md);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #newBtn:hover { background: var(--bg-accent-soft); }
+
+  #convList {
+    flex: 1;
+    overflow-y: auto;       /* 对话多了可以滚动 */
+    padding: 0 var(--sp-2) var(--sp-3);
+    list-style: none;       /* 去掉圆点 */
+  }
+  .conv-item {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+    margin-bottom: var(--sp-1);
+    border-radius: var(--r-md);
+    cursor: pointer;
+    font-size: var(--fs-md);
+    color: var(--text-primary);
+  }
+  .conv-item:hover { background: var(--bg-subtle); }
+  .conv-item.active {         /* 当前打开的会话：高亮 */
+    background: var(--bg-accent-soft);
+    color: var(--accent-strong);
+    font-weight: 600;
+  }
+  .conv-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;    /* 名字太长显示 … */
+    white-space: nowrap;
+  }
+  .conv-item button {
+    border: none;
+    background: none;
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
+    padding: var(--sp-1) var(--sp-1);
+    border-radius: var(--r-xs);
+    cursor: pointer;
+    opacity: 0;                 /* 平时藏起来，鼠标移到这一行才出现 */
+  }
+  .conv-item:hover button { opacity: 1; }
+  .conv-item button:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+  /* ================= 右侧：聊天主区域 ================= */
+  #main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;               /* 配合 flex 使用，防止内容把布局撑破 */
+  }
+  #chatTitle {
+    padding: var(--sp-4) var(--sp-5);
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  #titleText {
+    display: block;                /* 块级才能显示省略号 */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ===== 输入框上方的工作区设置（点标签弹出小菜单） ===== */
+  #workspaceBar {
+    position: relative;            /* 小菜单/弹层的定位锚点 */
+    display: flex;                 /* 左：工作区标签；右：上下文用量 */
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+  }
+
+  /* ===== 上下文用量计量（这次新加的） ===== */
+  #contextMeter {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+  }
+  #contextMeter:hover { color: var(--accent-strong); }
+  #contextMeter.warning { color: var(--danger); }        /* 接近压缩阈值时变红 */
+  #contextBar {
+    position: relative;
+    width: 90px;
+    height: 6px;
+    background: var(--bg-sunken);
+    border-radius: var(--r-full);
+  }
+  #contextFill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    border-radius: var(--r-full);
+    transition: width var(--dur-base) var(--ease-out);
+  }
+  #contextMeter.warning #contextFill { background: var(--warning); }
+  #contextMark {                 /* 压缩阈值的位置刻度 */
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 2px;
+    background: var(--danger);
+    opacity: 0.75;
+  }
+  #contextPanel {
+    position: absolute;
+    bottom: 130%;                /* 向上弹出 */
+    right: 0;                    /* 贴着右边缘 */
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    box-shadow: var(--shadow-pop);
+    padding: var(--sp-3) var(--sp-4);
+    min-width: 280px;
+    z-index: 10;
+  }
+  #contextPanel.hidden { display: none; }
+  #contextDetail {
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+    line-height: var(--lh-relaxed);
+    margin-bottom: var(--sp-3);
+    white-space: pre-line;       /* 让文本里的换行正常显示 */
+  }
+  #compactNowBtn {
+    border: 1px solid var(--accent);
+    background: var(--bg-surface);
+    color: var(--accent);
+    border-radius: var(--r-md);
+    padding: var(--sp-2) var(--sp-4);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+  }
+  #compactNowBtn:hover { background: var(--bg-accent-soft); }
+  #compactNowBtn:disabled { opacity: 0.6; cursor: not-allowed; }
+  #workspaceTag {
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--r-full);          /* 胶囊形状 */
+    padding: var(--sp-1) var(--sp-4);
+    cursor: pointer;
+    user-select: none;
+    max-width: 70%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #workspaceTag:hover {
+    border-color: var(--accent);
+    color: var(--accent-strong);
+    background: var(--bg-accent-soft);
+  }
+
+  /* 完整权限开关：平时是个安静的胶囊，打开后变红——提醒"这会儿没有围栏" */
+  #fullAccessTag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--r-full);
+    padding: var(--sp-1) var(--sp-3);
+    cursor: pointer;
+    user-select: none;
+    transition: all .15s;
+  }
+  #fullAccessTag:hover { border-color: var(--accent); }
+  #fullAccessTag input {
+    margin: 0;
+    width: 12px;
+    height: 12px;
+    cursor: pointer;
+    accent-color: #e5484d;
+  }
+  #fullAccessTag.on {
+    color: #b42318;
+    background: #fef3f2;
+    border-color: #fda29b;
+    font-weight: 600;
+  }
+  #workspaceMenu {
+    position: absolute;
+    bottom: 130%;                  /* 向上弹出（盖向消息区，不挡输入） */
+    left: 0;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    box-shadow: var(--shadow-pop);
+    padding: var(--sp-2);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
+    min-width: 190px;
+    z-index: 10;
+  }
+  #workspaceMenu.hidden { display: none; }
+  #workspaceMenu button {
+    border: none;
+    background: none;
+    text-align: left;
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--r-sm);
+    font-size: var(--fs-sm);
+    color: var(--text-primary);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #workspaceMenu button:hover { background: var(--bg-subtle); color: var(--accent-strong); }
+  #chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--sp-5);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+  }
+  #chat > * {
+    /* ★ 重要：禁止聊天条目被"压扁"（10-12 修的一个隐蔽 bug）
+       纵向 flex 容器里，内容超高时子项会被自动收缩；
+       而 overflow:hidden 的子项（比如工具卡片）会被压到接近 0 高度，
+       文字被裁成一条"细线"。这一行让所有条目保持原高、超高就滚动。 */
+    flex-shrink: 0;
+  }
+  .msg-wrap {
+    display: flex;
+    flex-direction: column;
+    max-width: 78%;
+  }
+  .msg-wrap.user { align-self: flex-end; align-items: flex-end; }   /* 用户消息靠右 */
+  .msg-wrap.ai { align-self: flex-start; }                          /* AI 消息靠左 */
+
+  .msg {
+    padding: var(--sp-3) var(--sp-4);
+    border-radius: var(--r-lg);
+    font-size: var(--fs-lg);
+    line-height: var(--lh-base);
+    white-space: pre-wrap;      /* 保留 AI 回答里的换行 */
+    word-break: break-word;
+  }
+  .msg.user {                  /* 用户的消息：右侧蓝色气泡 */
+    background: var(--accent);
+    color: var(--text-on-accent);
+    border-bottom-right-radius: var(--r-xs);
+  }
+  .msg.ai {                    /* AI 的消息：左侧白色气泡 */
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: var(--r-xs);
+    box-shadow: var(--shadow-sm);
+    white-space: normal;       /* 内容渲染成了 HTML，用正常排版（不再保留源码换行） */
+  }
+
+  /* ===== AI 回复里的 Markdown 渲染样式（这次新加的） ===== */
+  .msg.ai p { margin: 0 0 var(--sp-2); }
+  .msg.ai p:last-child { margin-bottom: 0; }
+  .msg.ai h1, .msg.ai h2, .msg.ai h3 { margin: var(--sp-3) 0 var(--sp-2); line-height: var(--lh-tight); }
+  .msg.ai h1 { font-size: var(--fs-2xl); }
+  .msg.ai h2 { font-size: var(--fs-xl); }
+  .msg.ai h3 { font-size: var(--fs-lg); }
+  .msg.ai ul, .msg.ai ol { margin: var(--sp-2) 0; padding-left: var(--sp-6); }
+  .msg.ai li { margin: var(--sp-1) 0; }
+  .msg.ai code {                      /* 行内代码 */
+    background: var(--bg-subtle);
+    padding: 1px var(--sp-1);
+    border-radius: var(--r-xs);
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+  }
+  .msg.ai pre {                       /* 代码块 */
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: var(--sp-3) var(--sp-3);
+    margin: var(--sp-2) 0;
+    overflow-x: auto;
+  }
+  .msg.ai pre code { background: none; padding: 0; }
+  .msg.ai blockquote {
+    margin: var(--sp-2) 0;
+    padding: var(--sp-1) var(--sp-3);
+    border-left: 3px solid var(--border-strong);
+    color: var(--text-secondary);
+  }
+  .msg.ai a { color: var(--accent); }
+  .msg.ai table { border-collapse: collapse; margin: var(--sp-2) 0; }
+  .msg.ai th, .msg.ai td { border: 1px solid var(--border); padding: var(--sp-1) var(--sp-3); font-size: var(--fs-md); }
+  .msg.ai th { background: var(--bg-subtle); }
+  .msg.ai hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-3) 0; }
+
+  /* ===== 鼠标悬浮在 AI 消息上时，气泡下方浮现的按钮（分支功能） ===== */
+  .msg-actions {
+    margin-top: var(--sp-1);
+    padding-left: var(--sp-1);
+    opacity: 0;                 /* 平时完全透明 */
+  }
+  .msg-wrap:hover .msg-actions { opacity: 1; }   /* 悬浮时显示 */
+  .msg-actions button {
+    border: 1px solid var(--border-strong);
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    font-size: var(--fs-xs);
+    padding: var(--sp-1) var(--sp-3);
+    border-radius: var(--r-sm);
+    cursor: pointer;
+  }
+  .msg-actions button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--bg-accent-soft);
+  }
+
+  /* ===== 工具调用相关（这次新加的） ===== */
+
+  /* 流式过程中的临时状态行："正在调用 xxx…" */
+  .tool-line {
+    align-self: flex-start;
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+    padding: 0 var(--sp-1);
+  }
+
+  /* 正式的工具记录卡片（进入消息时间线，刷新后还在） */
+  .tool-card {
+    align-self: flex-start;
+    max-width: 90%;
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: hidden;
+  }
+  .tool-card-head {
+    padding: var(--sp-2) var(--sp-3);
+    cursor: pointer;              /* 提示可以点击 */
+    user-select: none;            /* 点击时别把文字选中 */
+  }
+  .tool-card-head:hover { background: var(--bg-hover); }
+  .tool-card-body {
+    display: none;                /* 默认折叠，点击才展开 */
+    padding: var(--sp-2) var(--sp-3);
+    border-top: 1px solid var(--border);
+    background: var(--bg-surface);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 240px;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+  }
+  .tool-card.open .tool-card-body { display: block; }
+  .tool-card.fail .tool-card-head { color: var(--danger); }
+  /* 带子代理过程的卡片：body 放宽限高（要装得下"报告 + 过程面板"） */
+  .tool-card.has-subagent .tool-card-body { max-height: 560px; }
+
+  /* ===== 子代理过程（spawn_agent 卡片里的"展开看过程"） ===== */
+  .subagent-area {
+    margin-top: var(--sp-2);
+    padding-top: var(--sp-2);
+    border-top: 1px dashed var(--border-system);
+  }
+  .subagent-toggle {
+    font-family: inherit;
+    font-size: var(--fs-xs);
+    color: var(--text-system);
+    background: var(--bg-system-soft);
+    border: 1px solid var(--border-system);
+    border-radius: var(--r-sm);
+    padding: var(--sp-1) var(--sp-2);
+    cursor: pointer;
+  }
+  .subagent-toggle:hover { background: var(--bg-system-hover); }
+  .subagent-panel {
+    margin-top: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    border-left: 3px solid var(--border-system-strong);
+    background: var(--bg-surface);
+    border-radius: 0 var(--r-sm) var(--r-sm) 0;
+    /* 覆盖 tool-card-body 的等宽字体/预排版，恢复普通样式 */
+    font-family: var(--font-sans);
+    white-space: normal;
+    word-break: normal;
+    max-height: 380px;
+    overflow-y: auto;
+  }
+  .subagent-panel.hidden { display: none; }
+  .subagent-task {
+    font-size: var(--fs-xs);
+    color: var(--text-system);
+    font-weight: 500;
+    margin: var(--sp-1) 0 var(--sp-2);
+  }
+  .subagent-text {
+    font-size: var(--fs-sm);
+    color: var(--text-primary);
+    margin: var(--sp-2) 0;
+  }
+  .subagent-text p { margin: var(--sp-1) 0; }
+  .subagent-panel .tool-card { max-width: 100%; }
+
+  /* ===== 压缩卡片（消息区顶部："早期对话已合并为摘要"） ===== */
+  .compact-card {
+    align-self: flex-start;
+    max-width: 90%;
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+    background: var(--bg-system-soft);
+    border: 1px solid var(--border-system);
+    border-radius: var(--r-md);
+    overflow: hidden;
+  }
+  .compact-card-head {
+    padding: var(--sp-2) var(--sp-3);
+    cursor: pointer;
+    user-select: none;
+  }
+  .compact-card-head:hover { background: var(--bg-system-hover); }
+  .compact-card-body {
+    display: none;
+    padding: var(--sp-2) var(--sp-3);
+    border-top: 1px solid var(--border-system);
+    background: var(--bg-surface);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 240px;
+    overflow-y: auto;
+    font-size: var(--fs-xs);
+    line-height: var(--lh-base);
+  }
+  .compact-card.open .compact-card-body { display: block; }
+  .msg.error {                 /* 出错提示：浅红色气泡 */
+    background: var(--bg-danger-soft);
+    border-color: var(--border-danger);
+    color: var(--danger);
+  }
+
+  /* ================= 底部：输入区 ================= */
+  footer {
+    display: flex;
+    flex-direction: column;        /* 上行：工作区标签；下行：输入框 */
+    gap: var(--sp-2);
+    padding: var(--sp-3) var(--sp-5);
+    background: var(--bg-surface);
+    border-top: 1px solid var(--border);
+  }
+  #inputRow {
+    display: flex;
+    gap: var(--sp-3);
+  }
+  #input {
+    flex: 1;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    padding: var(--sp-3) var(--sp-4);
+    font-size: var(--fs-lg);
+    font-family: inherit;
+    outline: none;
+    resize: none;
+  }
+  #input:focus { border-color: var(--accent); }
+  #btn {
+    padding: 0 var(--sp-6);
+    border: none;
+    border-radius: var(--r-md);
+    background: var(--accent);
+    color: var(--text-on-accent);
+    font-size: var(--fs-lg);
+    cursor: pointer;
+  }
+  #btn:hover { background: var(--accent-strong); }
+  #btn:disabled { background: var(--bg-accent-soft); color: var(--accent); cursor: not-allowed; }
+  /* 生成中：同一个按钮变成"停止"（唯一的中断入口，所以用错误色提醒它是"打断"） */
+  #btn.stopping { background: var(--danger); color: var(--text-on-accent); }
+  #btn.stopping:hover { filter: brightness(0.92); }
+
+  /* ===== 图片输入（多模态） ===== */
+  #imgBtn {
+    padding: 0 var(--sp-3);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--r-md);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+    align-self: stretch;
+  }
+  #imgBtn:hover { background: var(--bg-subtle); color: var(--text-primary); }
+  #imageTray {
+    display: flex;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
+    padding: var(--sp-1) 0;
+  }
+  #imageTray.hidden { display: none; }
+  .tray-item {
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    overflow: hidden;
+    background: var(--bg-surface);
+  }
+  .tray-item img {
+    display: block;
+    height: 56px;
+    width: auto;
+  }
+  .tray-remove {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 18px;
+    height: 18px;
+    border: none;
+    border-radius: 50%;
+    background: rgba(51, 45, 36, 0.65);
+    color: var(--n50);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .tray-remove:hover { background: var(--danger); }
+  /* 消息气泡里的图片 */
+  .msg-image {
+    display: block;
+    max-width: 260px;
+    max-height: 220px;
+    border-radius: var(--r-sm);
+    margin-top: var(--sp-1);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+  }
+
+  /* ===== API Key 配置：左下角「查看链路日志」上方 ===== */
+  #keyBtn {
+    display: block;
+    width: calc(100% - var(--sp-3) * 2);
+    margin: var(--sp-2) var(--sp-3) 0;
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--r-md);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+    text-align: left;
+  }
+  #keyBtn:hover { background: var(--bg-subtle); color: var(--text-primary); }
+  #keyBtn.configured { color: var(--s600); border-color: var(--s600); }
+
+  /* ===== API Key 配置弹层 ===== */
+  #keyOverlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(51, 45, 36, 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 60;
+  }
+  #keyOverlay.hidden { display: none; }
+  #keyModal {
+    width: min(440px, 92vw);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-pop);
+    overflow: hidden;
+  }
+  #keyModalHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--sp-3) var(--sp-4);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  #keyClose {
+    border: none;
+    background: none;
+    font-size: var(--fs-lg);
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0 var(--sp-2);
+    border-radius: var(--r-sm);
+  }
+  #keyClose:hover { background: var(--bg-subtle); color: var(--text-primary); }
+  #keyBody { padding: var(--sp-4); }
+  #keyState {
+    font-size: var(--fs-sm);
+    color: var(--text-secondary);
+    margin-bottom: var(--sp-3);
+  }
+  #keyInput {
+    width: 100%;
+    box-sizing: border-box;
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    background: var(--bg-page);
+    color: var(--text-primary);
+    font-size: var(--fs-sm);
+    letter-spacing: .06em;
+  }
+  #keyInput.masked { cursor: pointer; color: var(--text-muted); }
+  #keyInput:focus { outline: 2px solid var(--p200); outline-offset: 1px; }
+  #keyHint {
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+    margin-top: var(--sp-2);
+    line-height: 1.6;
+  }
+  #keyErr {
+    font-size: var(--fs-xs);
+    color: var(--d600);
+    margin-top: var(--sp-2);
+    min-height: 1.1em;
+  }
+  #keyFoot {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--sp-2);
+    padding: var(--sp-3) var(--sp-4);
+    border-top: 1px solid var(--border);
+  }
+  #keyFoot button {
+    padding: var(--sp-2) var(--sp-4);
+    border-radius: var(--r-md);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+  }
+  #keyCancelBtn {
+    border: 1px solid var(--border-strong);
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+  }
+  #keyCancelBtn:hover { background: var(--bg-subtle); }
+  #keySaveBtn {
+    border: 1px solid var(--p600);
+    background: var(--p600);
+    color: var(--text-on-accent);
+  }
+  #keySaveBtn:hover:not(:disabled) { background: var(--p700); }
+  #keySaveBtn:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* ===== 链路日志（观测）：左下角入口 ===== */
+  #traceBtn {
+    margin: var(--sp-1) var(--sp-3) var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--r-md);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+  }
+  #traceBtn:hover { background: var(--bg-subtle); color: var(--text-primary); }
+
+  /* ===== 链路日志弹层 ===== */
+  #traceOverlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(51, 45, 36, 0.35);   /* 墨色半透明遮罩 */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+  }
+  #traceOverlay.hidden { display: none; }
+  #traceModal {
+    width: min(920px, 92vw);
+    height: min(80vh, 720px);
+    background: var(--bg-page);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-pop);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #traceModalHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  #traceClose {
+    border: none;
+    background: none;
+    font-size: var(--fs-lg);
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0 var(--sp-2);
+    border-radius: var(--r-sm);
+  }
+  #traceClose:hover { background: var(--bg-subtle); color: var(--text-primary); }
+  #traceBody {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--sp-3) var(--sp-4);
+    font-size: var(--fs-sm);
+  }
+  .trace-empty { color: var(--text-muted); text-align: center; padding: var(--sp-6) 0; }
+  .trace-back {
+    margin-bottom: var(--sp-2);
+    padding: var(--sp-1) var(--sp-2);
+    border: none;
+    background: none;
+    color: var(--accent);
+    cursor: pointer;
+    font-size: var(--fs-sm);
+    border-radius: var(--r-sm);
+  }
+  .trace-back:hover { background: var(--bg-accent-soft); }
+
+  /* 链路列表项 */
+  .trace-item {
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--bg-surface);
+    margin-bottom: var(--sp-2);
+    cursor: pointer;
+  }
+  .trace-item:hover { border-color: var(--border-strong); }
+  .trace-item-title {
+    font-size: var(--fs-md);
+    color: var(--text-primary);
+    margin-bottom: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .trace-item-head {
+    display: flex;
+    gap: var(--sp-2);
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+  }
+  .trace-badge {
+    font-size: var(--fs-xs);
+    padding: 0 var(--sp-2);
+    border-radius: var(--r-full);
+    background: var(--bg-subtle);
+    color: var(--text-secondary);
+  }
+  .trace-badge.err { background: var(--bg-danger-soft); color: var(--danger); }
+  .trace-badge.sub { background: var(--bg-system-soft); color: var(--text-system); }
+
+  /* 链路详情 */
+  .trace-detail-head {
+    display: flex;
+    gap: var(--sp-3);
+    flex-wrap: wrap;
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+    margin-bottom: var(--sp-3);
+  }
+  .trace-round {
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--bg-surface);
+    margin-bottom: var(--sp-2);
+  }
+  .trace-round summary, .trace-msg summary { cursor: pointer; user-select: none; }
+  .trace-round-head {
+    padding: var(--sp-2) var(--sp-3);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .trace-round-body {
+    padding: var(--sp-2) var(--sp-3) var(--sp-3);
+    border-top: 1px solid var(--border);
+  }
+  .trace-section-title { font-size: var(--fs-xs); color: var(--text-muted); margin: var(--sp-2) 0 var(--sp-1); }
+  .trace-msg {
+    border-left: 3px solid var(--border);
+    background: var(--bg-page);
+    border-radius: 0 var(--r-sm) var(--r-sm) 0;
+    margin-bottom: var(--sp-1);
+  }
+  .trace-msg.role-system { border-left-color: var(--border-system); }
+  .trace-msg.role-user { border-left-color: var(--accent); }
+  .trace-msg.role-assistant { border-left-color: var(--success); }
+  .trace-msg.role-tool { border-left-color: var(--warning); }
+  .trace-msg-role { padding: var(--sp-1) var(--sp-2); font-size: var(--fs-xs); color: var(--text-muted); }
+  .trace-msg-content {
+    padding: 0 var(--sp-2) var(--sp-2);
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: var(--lh-base);
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .trace-reasoning {
+    background: var(--bg-subtle);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--r-sm);
+    padding: var(--sp-2);
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .trace-tool {
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--bg-page);
+    padding: var(--sp-2);
+    margin-bottom: var(--sp-1);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .trace-tool .trace-tool-meta { color: var(--text-muted); font-family: var(--font-sans); }
+  .trace-footer-text {
+    font-size: var(--fs-sm);
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin-top: var(--sp-2);
+  }
+
+  /* ===== 弹层标签页（任务链路 / 缓存命中）===== */
+  .trace-tabs { display: flex; align-items: center; gap: var(--sp-1); }
+  .trace-tab {
+    border: none;
+    background: none;
+    padding: var(--sp-1) var(--sp-3);
+    border-radius: var(--r-sm);   /* 跟科技极简主题的"切割面板"圆角一致 */
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .trace-tab:hover { background: var(--bg-subtle); color: var(--text-primary); }
+  .trace-tab.active { background: var(--bg-accent-soft); color: var(--accent); font-weight: 600; }
+  .trace-badge.cache { background: var(--bg-accent-soft); color: var(--accent); }
+
+  /* ===== 缓存命中面板 ===== */
+  .cache-wrap { display: flex; flex-direction: column; gap: var(--sp-3); }
+  .cache-kpis { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+
+  .cache-kpi {
+    flex: 1 1 130px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: var(--sp-2) var(--sp-3);
+  }
+  .cache-kpi-label { font-size: var(--fs-xs); color: var(--text-muted); }
+  .cache-kpi-value {
+    font-size: var(--fs-2xl);
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    line-height: var(--lh-tight);
+  }
+  .cache-kpi-value small { font-size: var(--fs-sm); color: var(--text-muted); margin-left: 2px; }
+  .cache-kpi.hero .cache-kpi-value { color: var(--success); }
+  .cache-kpi.hero.low .cache-kpi-value { color: var(--warning); }
+  .cache-kpi-sub { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; }
+
+  .cache-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: var(--sp-3);
+  }
+  .cache-card-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+    margin-bottom: var(--sp-2);
+  }
+
+  .cache-bar {
+    display: flex;
+    height: 10px;
+    border-radius: var(--r-full);
+    overflow: hidden;
+    background: var(--bg-sunken);
+  }
+  .cache-bar .hit { background: var(--success); }
+  .cache-bar .miss { background: var(--border-strong); }
+
+  .cache-legend {
+    display: flex;
+    gap: var(--sp-3);
+    margin-top: var(--sp-2);
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+  }
+  .cache-legend i {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 2px;
+    margin-right: 4px;
+    vertical-align: 0;
+  }
+  .cache-legend .hit { background: var(--success); }
+  .cache-legend .miss { background: var(--border-strong); }
+
+  /* 按天柱状图 */
+  .cache-days {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--sp-2);
+    height: 150px;
+    padding-top: var(--sp-2);
+  }
+  .cache-day {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    align-items: center;
+    height: 100%;
+    gap: 2px;
+  }
+  .cache-day-rate { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .cache-day-bar {
+    width: 100%;
+    max-width: 36px;
+    display: flex;
+    flex-direction: column;
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--bg-sunken);
+  }
+  .cache-day-bar .hit { background: var(--success); }
+  .cache-day-bar .miss { background: var(--border-strong); }
+  .cache-day-date {
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  /* 最近任务 */
+  .cache-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-2) 0;
+    border-bottom: 1px dashed var(--border);
+    font-size: var(--fs-xs);
+  }
+  .cache-row:last-child { border-bottom: none; padding-bottom: 0; }
+  .cache-row-time { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .cache-row-preview {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+  }
+  .cache-row-bar {
+    display: flex;
+    width: 64px;
+    height: 6px;
+    border-radius: var(--r-full);
+    overflow: hidden;
+    background: var(--bg-sunken);
+    flex-shrink: 0;
+  }
+  .cache-row-bar .hit { background: var(--success); }
+  .cache-row-bar .miss { background: var(--border-strong); }
+  .cache-row-rate {
+    width: 44px;
+    text-align: right;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .cache-row-tokens { color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+  .cache-note {
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+    line-height: var(--lh-base);
+  }
+  .cache-usage { display: flex; flex-direction: column; gap: var(--sp-1); }
+  .cache-empty {
+    color: var(--text-muted);
+    text-align: center;
+    padding: var(--sp-5) var(--sp-3);
+    line-height: var(--lh-relaxed);
+    font-size: var(--fs-sm);
+    white-space: pre-line;   /* 说明文字按段落换行，别挤成一大坨 */
+  }
+</style>
+<!-- 主题层：冷调精密（科技极简）。删掉这一行即可回到原来的「暖纸墨」主题 -->
+<link rel="stylesheet" href="/static/theme-tech.css">
+<style>
+  /* codingstorm 助手裁剪：本 fork 没有文件/图片工具，相关的控件一律不显示。
+     用 display:none 而不是删节点 —— 原页面 JS 还会去取这些元素。 */
+  #workspaceTag, #workspaceMenu, #fullAccessTag, #imgBtn, #imageTray { display: none !important; }
+</style>
+</head>
+<body>
+
+  <!-- ===== 左侧栏：对话列表 ===== -->
+  <aside id="sidebar">
+    <button id="newBtn">＋ 新建对话</button>
+    <ul id="convList"></ul>
+    <button id="keyBtn" title="配置大模型 API Key（保存后立即生效）">API Key 配置</button>
+    <button id="traceBtn" title="查看执行链路、上下文快照与缓存命中率">查看链路日志</button>
+  </aside>
+
+  <!-- ===== 右侧：聊天主区域 ===== -->
+  <main id="main">
+    <header id="chatTitle">
+      <span id="titleText">新对话</span>
+    </header>
+    <div id="chat"></div>
+    <footer>
+      <!-- 输入框上方：工作区设置 + 上下文用量（点标签/计量条弹小面板） -->
+      <div id="workspaceBar">
+        <button id="workspaceTag" title="点击设置工作区（agent 的干活范围）">工作区：项目目录 ▾</button>
+        <div id="workspaceMenu" class="hidden">
+          <button data-action="pick">浏览选择文件夹…</button>
+          <button data-action="manual">手动输入路径…</button>
+          <button data-action="reset">项目目录（agent 直接改项目文件）</button>
+        </div>
+
+        <!-- 完整权限开关：关着的时候 agent 只能在「工作区」里读写 -->
+        <label id="fullAccessTag" title="点一下切换。关：agent 只能在上面那个工作区里读写。开：允许操作工作区以外的文件（仍会拒绝盘符根目录和系统目录），再点一次即可关回去。只对当前会话生效，刷新页面自动关回去。">
+          <input type="checkbox" id="fullAccessChk">
+          <span id="fullAccessText">完整权限</span>
+        </label>
+
+        <!-- 上下文用量计量（点击弹出详情 + 手动压缩）-->
+        <div id="contextMeter" title="上下文用量（点击看详情）">
+          <span id="contextText">上下文 ≈0%</span>
+          <div id="contextBar">
+            <div id="contextFill"></div>
+            <div id="contextMark"></div>
+          </div>
+        </div>
+        <div id="contextPanel" class="hidden">
+          <div id="contextDetail">…</div>
+          <button id="compactNowBtn">立即压缩</button>
+        </div>
+      </div>
+      <!-- 待发送的图片缩略图（有图时才显示） -->
+      <div id="imageTray" class="hidden"></div>
+      <div id="inputRow">
+        <button id="imgBtn" title="添加图片（也可以直接 Ctrl+V 粘贴截图）">图片</button>
+        <textarea id="input" rows="3" placeholder="说一句要做什么，比如：给 demo 项目加一个暂停按钮。按 Enter 发送，Shift+Enter 换行"></textarea>
+        <button id="btn">发送</button>
+      </div>
+      <!-- 隐藏的文件选择器（点「图片」按钮时触发） -->
+      <input type="file" id="imgFile" accept="image/png,image/jpeg,image/gif,image/webp" multiple class="hidden">
+    </footer>
+  </main>
+
+  <!-- ===== API Key 配置弹层（左下角"API Key 配置"按钮打开） ===== -->
+  <div id="keyOverlay" class="hidden">
+    <div id="keyModal">
+      <div id="keyModalHead">
+        <span>API Key</span>
+        <button id="keyClose" title="关闭（Esc）">✕</button>
+      </div>
+      <div id="keyBody">
+        <div id="keyState">正在读取配置…</div>
+        <!-- 明文 Key 永远不会出现在这个框里：已配置时它只装一串星号 -->
+        <input id="keyInput" type="password" autocomplete="off" spellcheck="false"
+               placeholder="sk-..." />
+        <div id="keyHint"></div>
+        <div id="keyErr"></div>
+      </div>
+      <div id="keyFoot">
+        <button id="keyCancelBtn">取消</button>
+        <button id="keySaveBtn" disabled>保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 链路日志弹层（左下角"查看链路日志"按钮打开） ===== -->
+  <div id="traceOverlay" class="hidden">
+    <div id="traceModal">
+      <div id="traceModalHead">
+        <div class="trace-tabs">
+          <button id="tabTraces" class="trace-tab active">任务链路</button>
+          <button id="tabCache" class="trace-tab">缓存命中</button>
+        </div>
+        <button id="traceClose" title="关闭（Esc）">✕</button>
+      </div>
+      <div id="traceBody"></div>
+    </div>
+  </div>
+
+<!-- Markdown 渲染库 + 安全清洗库（都是本地文件，不需要联网加载） -->
+<script src="/static/marked.umd.js"></script>
+<script src="/static/purify.js"></script>
+<script>
+// ============================================================
+// 一、状态：页面上所有"会变的东西"都集中放在这里
+// ------------------------------------------------------------
+// 前端最重要的思想之一："状态驱动界面"——
+//   数据变了 → 整个界面重新渲染。不要伸手去改页面的细节。
+//
+// 而"数据怎么记住"，本项目跟 Pi（github.com/earendil-works/pi）学的：
+//   你在页面上的每个动作，都会被翻译成一条条【事件】，
+//   只以"追加"的方式发给后端 → 后端把事件一行一行写进日志文件（data.jsonl）。
+//   下次打开页面时，后端会"回放"整个日志，把状态推导出来再发给我们。
+//
+// 目前用到的事件类型（type 字段）：
+//   session —— 新建了一个会话      { type:"session", id, title }
+//              （分支出来的会话会多带 branched_from / branched_at 血缘备注）
+//   message —— 新的一条消息        { type:"message", conversation_id, role, content }
+//   tool    —— 一次工具调用记录    { type:"tool", conversation_id, name, arguments, result, ok }
+//   workspace —— 设定会话的工作区   { type:"workspace", conversation_id, path }（path=null 恢复默认）
+//   compact  —— 上下文压缩记录      { type:"compact", conversation_id, summary, first_kept_index }
+//   rename  —— 会话改名            { type:"rename", id, title }
+//   delete  —— 删除会话            { type:"delete", id }
+//   switch  —— 切换当前会话        { type:"switch", id }
+//
+// 本页面的状态有三个：
+//   state     —— 所有会话 + 当前打开哪个（会被记进日志，刷新不丢）
+//   sending   —— 是否正在等 AI 回复（临时状态，刷新就重置）
+//   errorText —— 错误信息（临时状态）
+// ============================================================
+
+const state = {
+  conversations: [],   // 所有会话。每个会话长这样：{ id, title, messages: [...] }
+  current_id: null,    // 当前打开的是哪个会话（记的是会话的 id）
+};
+
+let sending = false;     // 正在等 AI 回复吗？
+let currentAbort = null; // 正在跑的这一轮流式请求的"中断开关"（AbortController）
+let errorText = "";      // 有错误就存在这里，渲染时显示出来
+let thinkingEl = null;   // "思考中…"那个气泡元素（流式回答就"长"在它身上）
+let pendingImages = [];  // 待发送的图片（{dataUrl, name}）——发送成功后清空
+
+// ---------- 先把页面上的元素抓在手里，后面反复要用 ----------
+const convListEl = document.getElementById("convList");
+const titleTextEl = document.getElementById("titleText");        // 标题栏里的会话名
+const workspaceTagEl = document.getElementById("workspaceTag");  // 输入框上方的工作区标签
+const fullAccessChkEl = document.getElementById("fullAccessChk");// 完整权限勾选框
+const fullAccessTagEl = document.getElementById("fullAccessTag");// 完整权限胶囊
+const fullAccessTextEl = document.getElementById("fullAccessText");
+const workspaceMenuEl = document.getElementById("workspaceMenu");// 工作区小菜单
+const contextMeterEl = document.getElementById("contextMeter");   // 上下文计量组件
+const contextTextEl = document.getElementById("contextText");     // 计量文字
+const contextFillEl = document.getElementById("contextFill");     // 用量条填充
+const contextMarkEl = document.getElementById("contextMark");     // 压缩阈值刻度
+const contextPanelEl = document.getElementById("contextPanel");   // 计量详情弹层
+const contextDetailEl = document.getElementById("contextDetail"); // 详情文字
+const compactNowBtn = document.getElementById("compactNowBtn");   // 立即压缩按钮
+const chatBox = document.getElementById("chat");
+const input = document.getElementById("input");
+const btn = document.getElementById("btn");
+const newBtn = document.getElementById("newBtn");
+// 图片输入相关
+const imgBtnEl = document.getElementById("imgBtn");        // "图片"按钮
+const imgFileEl = document.getElementById("imgFile");      // 隐藏的文件选择器
+const imageTrayEl = document.getElementById("imageTray");  // 待发送缩略图托盘
+// 链路日志相关
+const traceBtnEl = document.getElementById("traceBtn");       // 左下角入口按钮
+const traceOverlayEl = document.getElementById("traceOverlay"); // 弹层遮罩
+const traceBodyEl = document.getElementById("traceBody");      // 弹层内容区
+const traceCloseEl = document.getElementById("traceClose");    // 关闭按钮
+// API Key 配置相关
+const keyBtnEl = document.getElementById("keyBtn");
+const keyOverlayEl = document.getElementById("keyOverlay");
+const keyInputEl = document.getElementById("keyInput");
+const keyStateEl = document.getElementById("keyState");
+const keyHintEl = document.getElementById("keyHint");
+const keyErrEl = document.getElementById("keyErr");
+const keySaveBtnEl = document.getElementById("keySaveBtn");
+const keyCancelBtnEl = document.getElementById("keyCancelBtn");
+const keyCloseEl = document.getElementById("keyClose");
+const tabTracesEl = document.getElementById("tabTraces");      // 标签页：任务链路
+const tabCacheEl = document.getElementById("tabCache");        // 标签页：缓存命中
+
+// ============================================================
+// 二、和后端打交道的小函数
+// ============================================================
+
+// ★ 核心：把一批事件"追加"给后端
+//   （后端只会往 data.jsonl 末尾加行，永远不会重写旧内容）
+//   events 是一个数组，比如：
+//     [{ type: "message", conversation_id: "c123", role: "user", content: "你好" }]
+async function appendEvents(events) {
+  console.log("[新事件]", events);   // 打开浏览器控制台（F12）能看到事件流，方便学习
+  try {
+    await fetch("/api/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ events: events }),
+    });
+  } catch (err) {
+    // 发送失败也不让页面崩掉，只留个记录（比如后端没启动时会走到这）
+    console.warn("事件追加失败：", err);
+  }
+}
+
+// 取出"当前正在聊"的那个会话对象（找不到就返回 null）
+function currentConv() {
+  return state.conversations.find(function (c) { return c.id === state.current_id; });
+}
+
+// ============================================================
+// Markdown 渲染：把 AI 回复里的 **加粗**、# 标题、`代码` 等
+// 变成真正的页面效果（用本地的 marked 库 + DOMPurify 安全清洗）
+// ============================================================
+
+// 渲染流水线（两步）：
+//   ① marked：把 Markdown 原文转成 HTML（加粗、标题、代码块……）
+//   ② DOMPurify：把 HTML 里的危险内容洗掉（<script>、onerror 等）
+//      ——模型输出里万一有不怀好意的内容，到这一步就被"消毒"了
+function renderMarkdown(text) {
+  // 兜底：如果渲染库因为任何原因没加载出来，退化为"纯文本+换行"显示，
+  // 而不是让整个页面崩掉（防御性编程）
+  if (typeof marked === "undefined" || typeof DOMPurify === "undefined") {
+    return text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\n/g, "<br>");
+  }
+  const html = marked.parse(text, { breaks: true });
+  // breaks: true —— 让单个换行也能显示成换行（更符合聊天习惯）
+  const clean = DOMPurify.sanitize(html);
+  // 链接一律新开标签页：这个页面会被 codingstorm 用 iframe 嵌进去，
+  // 直接跳转会把整个任务队列页面装进那个小框里，看着像"功能坏了"。
+  const doc = new DOMParser().parseFromString(clean, "text/html");
+  doc.querySelectorAll("a[href]").forEach(function (a) {
+    a.target = "_blank";
+    a.rel = "noopener";
+  });
+  return doc.body.innerHTML;
+}
+
+// ============================================================
+// 三、四个操作：新建 / 切换 / 删除 / 重命名
+// ============================================================
+
+// 给新对话生成默认工作区的名字：形如 2026-10-16-20-56（年-月-日-时-分）
+// （后端会把"纯名字"补全成 <项目>/sandbox/<名字> 并创建目录）
+// 同一分钟内连开多个对话时，自动加 -2、-3 后缀，避免撞名
+function timestampWorkspaceName() {
+  const d = new Date();
+  const p = function (n) { return String(n).padStart(2, "0"); };
+  const base = d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
+    "-" + p(d.getHours()) + "-" + p(d.getMinutes());
+  const inUse = function (name) {
+    return state.conversations.some(function (c) {
+      const w = c.workspace || "";
+      return w.endsWith("sandbox\\" + name) || w.endsWith("sandbox/" + name);
+    });
+  };
+  let name = base;
+  let i = 2;
+  while (inUse(name)) { name = base + "-" + i; i++; }
+  return name;
+}
+
+// 【新建】造一个新会话，插到列表最前面，然后切过去
+async function createConversation() {
+  const conv = {
+    id: "c" + Date.now(),    // 用当前时间戳当 id：简单，而且基本不可能重复
+    title: "新对话",
+    messages: [],
+  };
+  state.conversations.unshift(conv);   // unshift：插到数组最前面
+  state.current_id = conv.id;
+
+  // 记忆方式：把"新建 + 默认工作区 + 切换"记成事件，追加到日志
+  const events = [{ type: "session", id: conv.id, title: conv.title }];
+
+  // ★ 给新对话自动分配"默认工作区"：sandbox/<时间戳>（如 sandbox/2026-10-16-20-56）
+  //   这样每个任务默认就有自己的独立沙箱、不会直接动项目文件；
+  //   想让 agent 直接在项目里干活，用工作区菜单切"项目目录"。
+  //   （分配失败——比如后端没启动——就降级：该对话按"项目目录"处理）
+  try {
+    const res = await fetch("/api/workspace", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: timestampWorkspaceName() }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      conv.workspace = data.path;
+      events.push({ type: "workspace", conversation_id: conv.id, path: data.path });
+    }
+  } catch (err) {
+    console.warn("默认工作区分配失败（后端没启动？）：", err);
+  }
+  events.push({ type: "switch", id: conv.id });
+
+  await appendEvents(events);
+
+  renderAll();
+  input.focus();           // 光标自动跳到输入框，马上能打字
+}
+
+// 【切换】点左侧列表里的某一项
+async function switchConversation(id) {
+  state.current_id = id;
+  errorText = "";
+  // 记住"最近打开的是哪个"：也记一条事件
+  await appendEvents([{ type: "switch", id: id }]);
+  renderAll();
+}
+
+// 【删除】
+async function deleteConversation(id) {
+  if (!confirm("确定要删除这个对话吗？删了就找不回来了。")) return;
+
+  // filter：把要删的那个过滤掉，剩下的留下来
+  state.conversations = state.conversations.filter(function (c) { return c.id !== id; });
+
+  // "删除"也是一条事件——有意思的是：日志里原来的消息其实还在，
+  // 只是回放时遇到 delete 事件就把这个会话忽略了（类似"划掉一笔账"）。
+  await appendEvents([{ type: "delete", id: id }]);
+
+  if (state.current_id === id) {
+    // 删掉的正好是当前打开的会话
+    if (state.conversations.length > 0) {
+      state.current_id = state.conversations[0].id;   // 换到第一个
+      await appendEvents([{ type: "switch", id: state.current_id }]);
+    } else {
+      // 一个都不剩了 → 自动建个新的（createConversation 里会记事件）
+      await createConversation();
+      return;
+    }
+  }
+
+  renderAll();
+}
+
+// 【重命名】用浏览器自带的输入框弹窗（prompt），代码最少
+async function renameConversation(id) {
+  const conv = state.conversations.find(function (c) { return c.id === id; });
+  const name = prompt("给这个对话起个新名字：", conv.title);
+  // name 为 null 说明用户点了"取消"；为空说明什么都没输入 → 都不处理
+  if (name && name.trim() !== "") {
+    conv.title = name.trim();
+    await appendEvents([{ type: "rename", id: id, title: conv.title }]);
+    renderAll();
+  }
+}
+
+// ============================================================
+// 【工作区设置】这个对话的 agent 能在哪个目录里干活。
+// 新对话会自动分配默认工作区（sandbox/<时间戳>，见 createConversation）；
+// 入口在输入框上方的小标签，点它可以切换：
+//   ① 浏览选择（弹系统"选择文件夹"对话框——和上传文件选路径一样）
+//   ② 手动输入（备用；还支持"纯名字建沙箱"的快捷方式）
+//   ③ 项目目录（让 agent 直接在项目里干活）
+// ============================================================
+
+// 点标签：开/关工作区小菜单（和上下文面板互斥）
+function toggleWorkspaceMenu() {
+  contextPanelEl.classList.add("hidden");
+  workspaceMenuEl.classList.toggle("hidden");
+}
+
+// 【方式①】浏览选择：让后端弹出系统"选择文件夹"对话框
+async function pickWorkspace() {
+  const conv = currentConv();
+  if (!conv) return;
+
+  try {
+    // 这个请求会一直等着，直到你在弹出的对话框里选完（或取消）
+    const res = await fetch("/api/workspace/pick", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),   // 带个空 JSON（接口不需要参数，保持格式统一）
+    });
+    const data = await res.json();
+
+    if (data.cancelled) return;   // 点了取消 → 什么都不做
+
+    if (!data.ok) {
+      // 弹框失败（比如环境不支持图形界面）→ 降级到手动输入
+      console.warn("系统选择框不可用：", data.error);
+      manualWorkspace();
+      return;
+    }
+
+    await applyWorkspace(data.path);   // 选好了 → 校验并应用
+
+  } catch (err) {
+    alert("连接后端失败，请确认 server.py 正在运行");
+  }
+}
+
+// 【方式②】手动输入（备用路径）：支持"纯名字→沙箱"快捷方式
+async function manualWorkspace() {
+  const conv = currentConv();
+  if (!conv) return;
+
+  const inputValue = prompt(
+    "手动输入工作区路径（agent 只能在这里面干活）：\n" +
+    "· 输入一个目录路径（不存在会自动创建，连父目录一起建）\n" +
+    "· 新建沙箱：输入一个名字（如 练习1），会在 sandbox/练习1 建新目录\n" +
+    "· 留空 = 使用项目目录",
+    conv.workspace || ""
+  );
+  if (inputValue === null) return;
+  const path = inputValue.trim();
+
+  if (path === "") {
+    await resetWorkspace();
+    return;
+  }
+  await applyWorkspace(path);
+}
+
+// 【方式③】切到项目目录（让 agent 直接改项目文件）
+async function resetWorkspace() {
+  const conv = currentConv();
+  if (!conv) return;
+  conv.workspace = null;
+  await appendEvents([{ type: "workspace", conversation_id: conv.id, path: null }]);
+  renderAll();
+}
+
+// 【公共部分】把一个路径设为当前会话的工作区（走后端校验/创建）
+async function applyWorkspace(path) {
+  const conv = currentConv();
+  if (!conv) return;
+
+  try {
+    const res = await fetch("/api/workspace", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path }),
+    });
+    const data = await res.json();
+
+    if (data.error) {
+      alert("设置失败：" + data.error);
+      return;
+    }
+
+    // 成功：记进事件日志（刷新后还记得）
+    conv.workspace = data.path;
+    await appendEvents([{ type: "workspace", conversation_id: conv.id, path: data.path }]);
+    renderAll();
+    if (data.created) alert("已为你新建工作区目录：\n" + data.path);
+
+  } catch (err) {
+    alert("连接后端失败，请确认 server.py 正在运行");
+  }
+}
+
+// ---------- 上下文计量：点开详情弹层 + 手动压缩 ----------
+
+function toggleContextPanel() {
+  workspaceMenuEl.classList.add("hidden");   // 两个小面板互斥
+  contextPanelEl.classList.toggle("hidden");
+}
+
+// 【立即压缩】把较早的对话交给后端总结成摘要（同自动压缩走同一套逻辑）
+async function manualCompact() {
+  const conv = currentConv();
+  if (!conv) return;
+
+  compactNowBtn.disabled = true;
+  compactNowBtn.textContent = "压缩中…（要调一次模型）";
+
+  try {
+    const messages = conv.messages;   // 完整时间线（含工具记录；下标与压缩状态保持一致）
+    const res = await fetch("/api/compact", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: messages, compaction: conv.compaction || null }),
+    });
+    const data = await res.json();
+
+    if (data.error) {
+      alert("压缩失败：" + data.error);
+      return;
+    }
+    if (!data.ok) {
+      alert(data.error || "暂时不需要压缩");
+      return;
+    }
+
+    // 成功：更新内存 + 记账（刷新后还在）
+    conv.compaction = { summary: data.summary, first_kept_index: data.first_kept_index };
+    await appendEvents([{
+      type: "compact",
+      conversation_id: conv.id,
+      summary: data.summary,
+      first_kept_index: data.first_kept_index,
+    }]);
+    contextPanelEl.classList.add("hidden");
+    renderAll();
+
+  } catch (err) {
+    alert("连接后端失败，请确认 server.py 正在运行");
+  } finally {
+    compactNowBtn.disabled = false;
+    compactNowBtn.textContent = "立即压缩";
+  }
+}
+
+// 【分叉】把某个会话的前 N 条消息复制成一个新会话（学 Pi 的 /fork 与 /tree）
+// ------------------------------------------------------------
+// ★ 为什么要把"复制历史"做成独立事件，而不是直接改原会话：
+//   原会话必须一动不动。用户是拿它当"证据"在看的——
+//   分叉出去试错，回头看原始那条链路还在，这才能对比"两种问法差别在哪"。
+//
+// ★ 必须继承工作区和它的 workspace 事件：
+//   否则分叉出来的会话会悄悄退回项目目录，等于把 agent 的权限范围换掉了。
+//   这种"不声不响换了环境"的问题最难查——它不报错，只是行为不一样。
+async function forkConversation(sourceId, keepCount, titleSuffix) {
+  const source = state.conversations.find(function (c) { return c.id === sourceId; });
+  if (!source) return;
+
+  const copied = source.messages.slice(0, keepCount);
+
+  const newConv = {
+    id: "c" + Date.now(),
+    title: source.title + titleSuffix,
+    messages: copied.map(function (m) {
+      return Object.assign({}, m);   // 浅拷贝：tool 条目的字段也原样带上
+    }),
+    workspace: source.workspace || null,
+  };
+  state.conversations.unshift(newConv);
+  state.current_id = newConv.id;
+
+  const events = [
+    {
+      type: "session",
+      id: newConv.id,
+      title: newConv.title,
+      branched_from: sourceId,        // 血缘备注（回放时忽略，旧代码天然兼容）
+      branched_at: keepCount - 1,
+    },
+  ];
+  if (newConv.workspace) {
+    events.push({ type: "workspace", conversation_id: newConv.id, path: newConv.workspace });
+  }
+  copied.forEach(function (m) {
+    if (m.role === "tool") {
+      events.push({
+        type: "tool",
+        conversation_id: newConv.id,
+        name: m.name,
+        arguments: m.arguments,
+        result: m.result,
+        ok: m.ok,
+        extra: m.extra || null,
+      });
+    } else {
+      events.push({
+        type: "message",
+        conversation_id: newConv.id,
+        role: m.role,
+        content: m.content,
+      });
+    }
+  });
+
+  await appendEvents(events);
+  renderAll();
+  input.focus();
+}
+
+// 从某条 AI 回复之后继续（保留这条回复，换个方向往下聊）
+function branchConversation(sourceId, index) {
+  return forkConversation(sourceId, index + 1, "·分支");
+}
+
+// 从某条用户消息重开（丢掉这条和它后面的一切，换个问法再来）
+// 为什么不含这条：这正是"我要重新问"的语义——留着它，就成了"再问一遍同样的话"。
+function rewindConversation(sourceId, index) {
+  return forkConversation(sourceId, index, "·重开");
+}
+
+// ============================================================
+// 【图片输入】粘贴 / 选文件 → 待发送缩略图 → 发送时上传拿路径
+// ------------------------------------------------------------
+// 图片本体存到后端 uploads/ 目录，消息里只存路径引用——
+// 这样事件日志（data.jsonl）不会被 base64 撑爆。
+// ============================================================
+const MAX_IMAGE_MB = 5;   // 单张图片上限（和后端 config.MAX_IMAGE_MB 一致）
+
+function addPendingImage(file) {
+  if (!file || !file.type || !file.type.startsWith("image/")) return;
+  if (file.size > MAX_IMAGE_MB * 1024 * 1024) {
+    alert("图片太大（上限 " + MAX_IMAGE_MB + " MB）");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = function () {
+    pendingImages.push({ dataUrl: reader.result, name: file.name || "粘贴的截图" });
+    renderImageTray();
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderImageTray() {
+  imageTrayEl.innerHTML = "";
+  imageTrayEl.classList.toggle("hidden", pendingImages.length === 0);
+  pendingImages.forEach(function (img, index) {
+    const item = document.createElement("div");
+    item.className = "tray-item";
+    const thumb = document.createElement("img");
+    thumb.src = img.dataUrl;
+    thumb.alt = img.name;
+    const remove = document.createElement("button");
+    remove.className = "tray-remove";
+    remove.textContent = "×";
+    remove.title = "移除这张图";
+    remove.addEventListener("click", function () {
+      pendingImages.splice(index, 1);
+      renderImageTray();
+    });
+    item.appendChild(thumb);
+    item.appendChild(remove);
+    imageTrayEl.appendChild(item);
+  });
+}
+
+// 上传一张图到后端（存 uploads/），返回相对路径；失败返回 null
+async function uploadImage(img) {
+  try {
+    const res = await fetch("/api/images", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: img.dataUrl, name: img.name }),
+    });
+    const data = await res.json();
+    return data.ok ? data.path : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+// 图片路径 → 浏览器可加载的地址（data: 前缀直接用；相对路径走 /uploads/ 路由）
+function imageSrc(path) {
+  if (typeof path !== "string") return "";
+  return path.startsWith("data:") ? path : "/" + path.replace(/\\/g, "/");
+}
+
+// ============================================================
+// 四、发送消息（核心流程）
+// ============================================================
+
+// ---------- 停止生成（刹车） ----------
+// 原理很简单：AbortController 一 abort，这条 fetch 立刻抛 AbortError，
+// 浏览器顺手关掉 TCP 连接；后端往这条连接写数据时抛 BrokenPipe，
+// 于是关掉引擎的生成器 —— engine 的 finally 会把这次链路记成 interrupted。
+//
+// ★ 一个必须知道的限制：如果此刻模型正在执行工具（比如 exec_command
+//   正在跑一条要 60 秒的命令），中断要等这条命令跑完才会真正生效。
+//   因为 Python 生成器只能在 yield 的地方被打断，而工具执行中间没有 yield。
+function stopStreaming() {
+  if (!currentAbort) return;
+  currentAbort.abort();
+  currentAbort = null;
+}
+
+async function sendMessage() {
+  const text = input.value.trim();
+  const images = pendingImages.slice();   // 本条消息要带的图片
+  if ((!text && images.length === 0) || sending) return;   // 空消息 → 不理它
+
+  const conv = currentConv();
+  if (!conv) return;
+
+  // 1. 先把图片上传到后端（消息里只存路径——图片本体不进事件日志）；
+  //    上传失败就中止，图片还留在托盘里可以重试
+  const imageBlocks = [];
+  for (const img of images) {
+    const path = await uploadImage(img);
+    if (!path) {
+      alert("图片上传失败，请重试");
+      return;
+    }
+    imageBlocks.push({ type: "image", path: path });
+  }
+
+  // 2. 组用户消息的内容：有图 → 多模态块数组；没图 → 纯字符串（向后兼容）
+  let userContent = text;
+  if (imageBlocks.length) {
+    userContent = [];
+    if (text) userContent.push({ type: "text", text: text });
+    imageBlocks.forEach(function (b) { userContent.push(b); });
+  }
+
+  // 3. 放进内存显示出来，清空输入框和图片托盘
+  conv.messages.push({ role: "user", content: userContent });
+  input.value = "";
+  pendingImages = [];
+  renderImageTray();
+  errorText = "";
+
+  // 2. 进入"发送中"状态，并重新渲染（页面会显示"思考中…"气泡）
+  sending = true;
+  renderAll();
+
+  // ★ 本轮回答要按"时间线"分段落：
+  //   模型可能"先说一句话 → 调用工具 → 再接着说"，
+  //   所以拆成 [{text:"我先看看…"}, {tool:…}, {text:"我把读了一遍…"}] 这样的数组，
+  //   回放/显示时顺序才和真实发生的一致。
+  const segments = [];
+  let currentText = "";            // 正在累积的这一段文字
+  let currentBubble = thinkingEl;  // 正在生长的气泡（被工具打断后，下一段文字换新气泡）
+
+  // 小工具：把累积的文字"封成一段"（工具调用前、流结束时都会用到）
+  function closeTextSegment() {
+    if (currentText) {
+      segments.push({ type: "text", text: currentText });
+      currentText = "";
+    }
+  }
+
+  const toolLines = [];    // 流式过程中"正在调用…"的临时状态行元素
+  let compactEvent = null; // 本轮若发生"自动压缩"，记下来（结束时一起记账）
+
+  // ★ 这一轮收尾：把时间线写进内存 + 写进事件日志。
+  //   正常结束和"用户点了停止"共用同一条路径——
+  //   这样"界面上看到的"和"下次发给模型的上下文"永远是同一份，不会错位。
+  async function commitTurn(turnSegments) {
+    // ① 写进内存（顺序 = 真实发生的顺序）
+    turnSegments.forEach(function (seg) {
+      if (seg.type === "text") {
+        conv.messages.push({ role: "assistant", content: seg.text });
+      } else {
+        conv.messages.push({
+          role: "tool",
+          name: seg.name,
+          arguments: seg.arguments,
+          result: seg.result,
+          ok: seg.ok,
+          extra: seg.extra || null,
+        });
+      }
+    });
+
+    // ② 记账：按同样顺序生成事件，一次性批量追加
+    //    （user → [文字/工具 交替]；工具记录也进日志，方便回溯）
+    const events = [];
+    if (compactEvent) events.push(compactEvent);   // 压缩记录排最前（本轮的附注）
+    events.push({ type: "message", conversation_id: conv.id, role: "user", content: userContent });
+    turnSegments.forEach(function (seg) {
+      if (seg.type === "text") {
+        events.push({
+          type: "message", conversation_id: conv.id, role: "assistant", content: seg.text,
+        });
+      } else {
+        events.push({
+          type: "tool",
+          conversation_id: conv.id,
+          name: seg.name,
+          arguments: seg.arguments,
+          result: seg.result,
+          ok: seg.ok,
+          extra: seg.extra || null,
+        });
+      }
+    });
+    if (conv.title === "新对话") {
+      conv.title = (text || "图片").slice(0, 12);   // 取前 12 个字当标题（只有图就用"图片"）
+      events.push({ type: "rename", id: conv.id, title: conv.title });
+    }
+    await appendEvents(events);
+  }
+
+  try {
+    // 3. 调后端的流式聊天接口
+    //    ★ 发送完整时间线（含"工具记录"）：后端会先按压缩状态切片，
+    //      再把工具记录转换成模型协议格式——这样模型能"记得"自己
+    //      之前读过什么，不用重复读文件
+    const fullHistory = conv.messages;
+    // ★ 给这次请求配一个"中断开关"：点"停止"时就是把它 abort 掉
+    const controller = new AbortController();
+    currentAbort = controller;
+    const res = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: fullHistory,
+        workspace: conv.workspace || null,
+        full_access: !!conv.fullAccess,        // 输入框旁那个「完整权限」开关
+        compaction: conv.compaction || null,   // 当前压缩状态（后端据此"应用"压缩）
+        conversation_id: conv.id,              // 链路日志用（标记这次任务是哪个会话的）
+      }),
+      signal: controller.signal,               // ★ 接上中断开关
+    });
+    if (!res.ok || !res.body) {
+      throw new Error("服务未就绪（HTTP " + res.status + "），请重启 server.py 后再试");
+    }
+
+    // 4. 流式读取（逐块读 + 缓冲区兜住"半行"）
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const payload = line.slice(6);
+        if (payload === "[DONE]") continue;
+
+        const msg = JSON.parse(payload);
+        if (msg.error) throw new Error(msg.error);
+
+        if (msg.type === "text") {
+          // 一段回答文字 → 打字机效果
+          // 如果当前没有"生长中的气泡"（说明上一段被工具打断了），先新建一个
+          if (!currentBubble) {
+            currentBubble = addBubble("ai", "");
+          }
+          currentText += msg.text;
+          currentBubble.innerHTML = renderMarkdown(currentText);
+          chatBox.scrollTop = chatBox.scrollHeight;
+
+        } else if (msg.type === "tool_call") {
+          // 模型要调工具了 → 先把刚才那段文字"封段"，当前气泡到此为止
+          closeTextSegment();
+          currentBubble = null;
+
+          // 加一行临时状态（追加在时间线末尾，顺序自然正确）
+          const lineEl = document.createElement("div");
+          lineEl.className = "tool-line";
+          if (msg.name === "spawn_agent" && msg.arguments && msg.arguments.task) {
+            // 子代理可能要跑一阵子：把"派了什么活"亮出来，别让人干等
+            const t = String(msg.arguments.task);
+            lineEl.textContent = "子代理出动，正在干活…（任务：" +
+              (t.length > 60 ? t.slice(0, 60) + "…" : t) + "）";
+          } else {
+            lineEl.textContent = "正在调用工具 " + msg.name + " …";
+          }
+          chatBox.appendChild(lineEl);
+          toolLines.push(lineEl);
+          chatBox.scrollTop = chatBox.scrollHeight;
+
+        } else if (msg.type === "tool_result") {
+          // 工具执行完了 → 更新那一行状态，并把这次工具记进时间线
+          const lineEl = toolLines.shift();
+          if (lineEl) {
+            lineEl.textContent = "工具 " + msg.name + (msg.ok ? " 执行完成" : " 执行失败");
+          }
+          segments.push({
+            type: "tool",
+            name: msg.name,
+            arguments: msg.arguments,
+            result: msg.result,
+            ok: msg.ok,
+            extra: msg.extra || null,   // ★ 附加数据（子代理的完整过程）
+          });
+          chatBox.scrollTop = chatBox.scrollHeight;
+
+        } else if (msg.type === "compacted") {
+          // 后端在本轮对话里做了"自动压缩"（上下文超阈值了）：
+          // ① 更新内存里的压缩状态 ② 记下来（结束时统一记账）
+          // ③ 只刷新用量条——不能重建消息区（回复还在流式生长中）
+          conv.compaction = { summary: msg.summary, first_kept_index: msg.first_kept_index };
+          compactEvent = {
+            type: "compact",
+            conversation_id: conv.id,
+            summary: msg.summary,
+            first_kept_index: msg.first_kept_index,
+          };
+          updateContextMeter();
+        }
+      }
+    }
+
+    // 流结束：最后一段文字也封段
+    closeTextSegment();
+
+    // 5 + 6. 按 segments 的顺序写进内存和事件日志
+    //        （顺序 = 真实发生的顺序，工具记录也一并记下）
+    await commitTurn(segments);
+
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      // ★ 用户点了"停止"：这不是错误，别弹红字。
+      //   已经收到的内容照样记账，只在末尾补一句"已手动停止"——
+      //   这样下次发给模型时，它也知道自己上一轮被打断了。
+      closeTextSegment();
+      // toolLines 里还有没等到结果的，说明中断发生在某个工具执行途中
+      const note = toolLines.length > 0
+        ? "（已手动停止，有工具调用被中断）"
+        : "（已手动停止）";
+      if (!segments.length) {
+        segments.push({ type: "text", text: "*" + note + "*" });
+      } else {
+        const last = segments[segments.length - 1];
+        if (last.type === "text") {
+          last.text += "\n\n*" + note + "*";
+        } else {
+          segments.push({ type: "text", text: "*" + note + "*" });
+        }
+      }
+      try {
+        await commitTurn(segments);
+      } catch (e) {
+        console.warn("停止后记账失败（不影响界面显示）：", e);
+      }
+
+    } else {
+      // 真出错（没填 Key、网络断开、服务没起……）：
+      // 简化处理：该轮不记账，从内存里拿掉这句提问，显示错误提示。
+      // （已经流出的半截内容、工具临时行，会被下一次重绘一起清掉）
+      errorText = (err instanceof TypeError)
+        ? "连不上后端服务，请确认 server.py 正在运行。"
+        : (err.message || "连接出错");
+      conv.messages.pop();
+    }
+  }
+
+  // 7. 收尾：退出发送状态，重新渲染
+  //    （这时工具记录会变成正式的小卡片、各段回答会被正式渲染）
+  sending = false;
+  currentAbort = null;
+  renderAll();
+  input.focus();
+}
+
+// ============================================================
+// 五、渲染：根据上面的状态，把整个页面画出来
+//     （任何时候状态变了，就调一次 renderAll，页面永远和状态一致）
+// ============================================================
+function renderAll() {
+  renderSidebar();          // 左：对话列表
+  renderMessages();         // 右：消息 + 标题
+  updateContextMeter();     // 输入框上方：上下文用量条
+  // 发送按钮：空闲时是"发送"，生成中变成"停止"（同一个按钮，不额外占位置）
+  //   注意这里不能在生成中 disable —— 那时它正是唯一能踩的刹车
+  btn.textContent = sending ? "停止" : "发送";
+  btn.classList.toggle("stopping", sending);
+  btn.title = sending ? "中断这次回答" : "发送（Enter）";
+}
+
+// ---------- 渲染左侧的对话列表 ----------
+function renderSidebar() {
+  convListEl.innerHTML = "";    // 先全部清空，再重新生成（简单直接，小项目够用）
+
+  state.conversations.forEach(function (conv) {
+    const li = document.createElement("li");
+    li.className = "conv-item" + (conv.id === state.current_id ? " active" : "");
+    li.addEventListener("click", function () { switchConversation(conv.id); });
+
+    // 会话名字
+    const title = document.createElement("span");
+    title.className = "conv-title";
+    title.textContent = conv.title;
+
+    // 重命名小按钮（✎）
+    const renameBtn = document.createElement("button");
+    renameBtn.textContent = "✎";
+    renameBtn.title = "重命名";
+    renameBtn.addEventListener("click", function (e) {
+      e.stopPropagation();   // ★ 阻止事件"冒泡"上去：不然会连带触发 li 的切换
+      renameConversation(conv.id);
+    });
+
+    // 删除小按钮（✕）
+    const delBtn = document.createElement("button");
+    delBtn.textContent = "✕";
+    delBtn.title = "删除";
+    delBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      deleteConversation(conv.id);
+    });
+
+    li.appendChild(title);
+    li.appendChild(renameBtn);
+    li.appendChild(delBtn);
+    convListEl.appendChild(li);
+  });
+}
+
+// ============================================================
+// 上下文计量：估算"发给模型的上下文"用了多少 token
+// （和 plugins/compact.py 的 estimate_tokens 保持同一套公式）
+// ============================================================
+
+// 后端配置（窗口大小、压缩阈值等）——init 时从 /api/state 拉取
+// （这里的默认值只是"还没拿到后端配置"时的兜底，按 deepseek-flash 的 1M 窗口）
+let contextConfig = { window: 1000000, threshold_ratio: 0.7, keep_recent: 12, enabled: true, baseline_tokens: 0 };
+
+// 取一条消息的"文本部分"（content 可能是字符串，也可能是多模态块数组）
+function messageText(m) {
+  if (typeof m.content === "string") return m.content;
+  if (Array.isArray(m.content)) {
+    return m.content.map(function (b) {
+      if (b && b.type === "text") return b.text || "";
+      if (b && b.type === "image") return "[图片]";
+      return "";
+    }).join("");
+  }
+  return "";
+}
+
+// 一条消息里有几张图片（估算 token 用）
+function messageImageCount(m) {
+  if (!Array.isArray(m.content)) return 0;
+  return m.content.filter(function (b) { return b && b.type === "image"; }).length;
+}
+
+// 粗略估算：汉字约 0.6 token/字，其他字符约 0.25 token/个，每条消息 +4，
+// 图片每张 +400（官方单图上限约 384，取保守值）
+// （和 plugins/compact.py 的 estimate_tokens 保持同一套公式）
+function estimateTokens(messages) {
+  let total = 0;
+  for (const m of messages) {
+    let text;
+    if (m.role === "tool") {
+      // 工具条目的正文在 result 里（参数也占一点）；
+      // 而且它发给模型时会展开成"两条消息"——如实算
+      text = (m.result || "") + JSON.stringify(m.arguments || {});
+    } else {
+      text = messageText(m);
+    }
+    let cjk = 0;
+    let other = 0;
+    for (const ch of text) {
+      if (ch >= "\u4e00" && ch <= "\u9fff") cjk++;
+      else other++;
+    }
+    total += Math.ceil(cjk * 0.6 + other * 0.25) + 4 + (m.role === "tool" ? 4 : 0)
+      + messageImageCount(m) * 400;
+  }
+  return total;
+}
+
+// 算当前会话的上下文用量（"应用压缩后"的有效上下文）
+function contextUsage(conv) {
+  let msgs = conv.messages;   // 工具记录也会随上下文发给模型，一起计入用量
+  // 固定基线：系统人设 + 工具说明书（后端算好、随 /api/state 发来）
+  // —— 这是"窗口占用"的一部分，不是"费用"
+  let used = contextConfig.baseline_tokens || 0;
+  const c = conv.compaction;
+  if (c) {
+    msgs = msgs.slice(c.first_kept_index);    // 只算保留段
+    used += estimateTokens([{ role: "system", content: c.summary }]);   // 加上摘要
+  }
+  used += estimateTokens(msgs);
+  const limit = contextConfig.window;
+  const threshold = Math.floor(limit * contextConfig.threshold_ratio);
+  return { used: used, limit: limit, threshold: threshold };
+}
+
+// 刷新计量条（renderAll 里会调用；收到"已压缩"事件时也会单独调用）
+function updateContextMeter() {
+  const conv = currentConv();
+  if (!conv) return;
+
+  const info = contextUsage(conv);
+  const percent = Math.min(100, Math.round(info.used / info.limit * 100));
+
+  contextTextEl.textContent = "上下文 ≈" + percent + "%";
+  contextFillEl.style.width = percent + "%";
+  // 压缩阈值刻度线的位置
+  contextMarkEl.style.left = "calc(" + (contextConfig.threshold_ratio * 100) + "% - 1px)";
+  // 用量超过阈值的 90% 时变红提醒
+  contextMeterEl.classList.toggle("warning", info.used > info.threshold * 0.9);
+
+  // 详情弹层里的文案
+  contextDetailEl.textContent =
+    "上下文用量（估算）：约 " + info.used.toLocaleString() +
+    " / " + info.limit.toLocaleString() + " token\n" +
+    "（其中：系统人设与工具说明每次固定占用约 " +
+    (contextConfig.baseline_tokens || 0).toLocaleString() + " token）\n" +
+    "达到 " + info.threshold.toLocaleString() +
+    "（" + Math.round(contextConfig.threshold_ratio * 100) + "%）时自动压缩，" +
+    "保留最近 " + contextConfig.keep_recent + " 条。\n" +
+    (conv.compaction
+      ? "已压缩：" + conv.compaction.first_kept_index + " 条之前的历史已合并为摘要。"
+      : "尚未压缩过。");
+}
+
+// 路径太长时缩短显示（只影响界面，不影响真实路径）
+function shortenPath(p) {
+  if (p.length <= 32) return p;
+  return "…" + p.slice(-28);
+}
+
+// ---------- 渲染右侧的消息区 ----------
+function renderMessages() {
+  const conv = currentConv();
+
+  // 标题栏：左边是会话名，右边是工作区标签
+  titleTextEl.textContent = conv ? conv.title : "新对话";
+  const ws = conv ? conv.workspace : null;
+  workspaceTagEl.textContent = "工作区：" + (ws ? shortenPath(ws) : "项目目录") + " ▾";
+  workspaceTagEl.title = ws
+    ? "当前工作区：" + ws + "（点击修改）"
+    : "默认工作区：项目目录（点击修改）";
+
+  syncFullAccess();
+
+  chatBox.innerHTML = "";       // 同样先清空
+
+  // 如果这个会话压缩过：先在最顶部放一张"压缩卡片"（代表被吸收的早期对话）
+  if (conv && conv.compaction) {
+    addCompactionCard(conv.compaction);
+  }
+
+  // 把会话里的每条消息画成气泡（或工具卡片）
+  if (conv) {
+    conv.messages.forEach(function (msg, index) {
+      if (msg.role === "tool") {
+        // 工具记录：渲染成灰色小卡片（点击可展开看完整结果）
+        addToolCard(msg);
+      } else if (msg.role === "assistant") {
+        // AI 的回复：附上"坐标"（哪个会话、第几条），悬浮按钮点它时才知道分支哪里
+        addBubble("ai", msg.content, { convId: conv.id, index: index });
+      } else {
+        // 用户消息也挂一个入口：回到这一步重来（学 Pi 的 /tree）
+        addBubble("user", msg.content, { convId: conv.id, index: index, mode: "rewind" });
+      }
+    });
+  }
+
+  // 空会话 → 显示一句欢迎语
+  if (!conv || conv.messages.length === 0) {
+    addBubble("ai", "你好，我是 codingstorm 的需求助手。用大白话说要做什么，我会整理成一条结构化任务放进队列，然后立刻回来 —— 你可以接着说下一件事，不用等任务跑完。");
+  }
+
+  // 正在等回复 → 显示"思考中…"（把元素引用记下来，流式回答会直接改它的文字）
+  thinkingEl = null;
+  if (sending) {
+    thinkingEl = addBubble("ai", "思考中…");
+  }
+
+  // 有错误 → 用红色气泡显示
+  if (errorText) {
+    const div = addBubble("ai", "出错了：" + errorText);
+    div.classList.add("error");
+  }
+}
+
+// ---------- 把一条消息做成气泡，贴到消息区 ----------
+// branchInfo（可选）：{ convId, index }。只有可分支的 AI 消息才传它，
+// 传了就会在气泡下方挂一个"悬浮时才出现"的分支按钮。
+function addBubble(role, text, branchInfo) {
+  // 外层"壳"：负责悬浮探测（鼠标悬在上面时按钮才浮现）
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap " + role;
+
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  if (role === "ai") {
+    // AI 的回复：按 Markdown 渲染成真正的格式（renderMarkdown 内部先做了转义，防注入）
+    div.innerHTML = renderMarkdown(text);
+  } else if (Array.isArray(text)) {
+    // 用户消息可能是"多模态块数组"（文字 + 图片）
+    text.forEach(function (block) {
+      if (block.type === "text" && block.text) {
+        const p = document.createElement("div");
+        p.textContent = block.text;
+        div.appendChild(p);
+      } else if (block.type === "image" && block.path) {
+        const img = document.createElement("img");
+        img.className = "msg-image";
+        img.src = imageSrc(block.path);
+        img.alt = "图片";
+        div.appendChild(img);
+      }
+    });
+  } else {
+    // 用户的消息：原样显示（textContent 天然安全）
+    div.textContent = text;
+  }
+  wrap.appendChild(div);
+
+  // 可分支的消息：在气泡下方放一个按钮
+  if (branchInfo) {
+    const isRewind = branchInfo.mode === "rewind";
+    const actions = document.createElement("div");
+    actions.className = "msg-actions";
+    const branchBtn = document.createElement("button");
+    branchBtn.textContent = isRewind ? "从这里重开" : "分支新对话";
+    branchBtn.title = isRewind
+      ? "把这条消息之前的历史复制到一个新会话（这条和它之后的不带过去），可以换个问法重来"
+      : "把对话复制成一个新会话，从这条回复之后换个方向继续";
+    branchBtn.addEventListener("click", function () {
+      if (isRewind) {
+        rewindConversation(branchInfo.convId, branchInfo.index);
+      } else {
+        branchConversation(branchInfo.convId, branchInfo.index);
+      }
+    });
+    actions.appendChild(branchBtn);
+    wrap.appendChild(actions);
+  }
+
+  chatBox.appendChild(wrap);
+  chatBox.scrollTop = chatBox.scrollHeight;    // 自动滚动到最新消息
+  return div;   // 返回气泡本身（"思考中…"改红色错误样式时要用它）
+}
+
+// ---------- 把一条"工具记录"做成灰色小卡片 ----------
+// 点击卡片头部可以展开/收起完整结果
+// （"默认折叠、想看了再展开"这个交互学自 Pi 的 Ctrl+O）
+function addToolCard(tool, parent) {
+  const card = document.createElement("div");
+  card.className = "tool-card" + (tool.ok ? "" : " fail");
+
+  // 头部：一行摘要
+  const head = document.createElement("div");
+  head.className = "tool-card-head";
+  const argsText = JSON.stringify(tool.arguments);   // 参数变成一小串文字
+  head.textContent = "工具 " + tool.name + "(" +
+    (argsText.length > 60 ? argsText.slice(0, 60) + "…" : argsText) +
+    ") —— " + (tool.ok ? "成功（点击展开）" : "失败（点击展开）");
+
+  // 身体：完整结果（默认折叠）
+  const body = document.createElement("div");
+  body.className = "tool-card-body";
+  body.textContent = tool.result || "";
+
+  // ★ 子代理的卡片：结果下面再挂一块"完整过程"（默认收起）
+  //   数据来自 extra.subagent——子代理的完整对话时间线
+  if (tool.extra && tool.extra.subagent) {
+    card.classList.add("has-subagent");   // 让这类卡片的 body 放宽限高
+    body.appendChild(buildSubagentArea(tool.extra.subagent));
+  }
+
+  // 点头部切换展开/收起
+  head.addEventListener("click", function () {
+    card.classList.toggle("open");
+  });
+
+  card.appendChild(head);
+  card.appendChild(body);
+  // parent 用来"嵌套摆放"（子代理过程里的工具行会挂进过程面板）；
+  // 不传就放在主消息区（原有的用法）
+  (parent || chatBox).appendChild(card);
+  if (!parent) chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+// ---------- 子代理的"完整过程"区（挂在 spawn_agent 的工具卡片里） ----------
+// 数据是子代理的完整对话时间线：任务 → 中间文字/工具调用 → 结论
+// （由 spawn_agent 在 extra.subagent.messages 里带回，跟着日志走、刷新后还在）
+function buildSubagentArea(sub) {
+  const area = document.createElement("div");
+  area.className = "subagent-area";
+
+  const msgs = sub.messages || [];
+
+  const toggle = document.createElement("button");
+  toggle.className = "subagent-toggle";
+  toggle.textContent = "展开子代理过程（" + msgs.length + " 条记录）";
+
+  const panel = document.createElement("div");
+  panel.className = "subagent-panel hidden";
+
+  msgs.forEach(function (m) {
+    if (m.role === "user") {
+      // 任务描述
+      const el = document.createElement("div");
+      el.className = "subagent-task";
+      el.textContent = "任务：" + (m.content || "");
+      panel.appendChild(el);
+    } else if (m.role === "assistant") {
+      // 子代理说的话（和主消息一样走 Markdown 渲染）
+      const el = document.createElement("div");
+      el.className = "subagent-text";
+      el.innerHTML = renderMarkdown(m.content || "");
+      panel.appendChild(el);
+    } else if (m.role === "tool") {
+      // 子代理的工具调用：复用工具卡片（嵌套进过程面板）
+      addToolCard(m, panel);
+    }
+  });
+
+  toggle.addEventListener("click", function () {
+    const isHidden = panel.classList.toggle("hidden");
+    toggle.textContent = (isHidden ? "展开" : "收起") +
+      "子代理过程（" + msgs.length + " 条记录）";
+  });
+
+  area.appendChild(toggle);
+  area.appendChild(panel);
+  return area;
+}
+
+// ---------- 压缩卡片：表示"之前的历史已合并为摘要" ----------
+function addCompactionCard(compaction) {
+  const card = document.createElement("div");
+  card.className = "compact-card";
+
+  const head = document.createElement("div");
+  head.className = "compact-card-head";
+  head.textContent = "已压缩早期对话（前 " + compaction.first_kept_index +
+    " 条已合并为摘要）—— 点击查看摘要";
+
+  const body = document.createElement("div");
+  body.className = "compact-card-body";
+  body.textContent = compaction.summary || "";
+
+  head.addEventListener("click", function () {
+    card.classList.toggle("open");
+  });
+
+  card.appendChild(head);
+  card.appendChild(body);
+  chatBox.appendChild(card);
+}
+
+// ============================================================
+// 六、链路日志（观测）：查看每次任务的完整执行链路
+// ------------------------------------------------------------
+// 数据由后端 tracing 模块记录（traces.jsonl），包含：
+//   每次任务里每一轮实际发给模型的上下文快照、模型思考过程、
+//   工具调用（参数/结果/耗时）、最终输出。
+// 接口：GET /api/traces（列表）、GET /api/traces/<id>（详情）
+// ============================================================
+
+function openTracePanel() {
+  traceOverlayEl.classList.remove("hidden");
+  switchTraceTab("traces");
+}
+
+function closeTracePanel() {
+  traceOverlayEl.classList.add("hidden");
+}
+
+// 视图令牌：每次重绘 +1。异步请求回来时如果令牌变了，说明用户已经切走了，
+// 直接把结果丢掉——否则"列表"的慢请求会把已经画好的"缓存面板"覆盖掉。
+let traceViewSeq = 0;
+
+function beginTraceView() {
+  traceViewSeq += 1;
+  traceBodyEl.innerHTML = "";
+  return traceViewSeq;
+}
+
+function isCurrentTraceView(seq) {
+  return seq === traceViewSeq;
+}
+
+// 两个标签页：任务链路 / 缓存命中（同一份数据源，两种视角）
+function switchTraceTab(tab) {
+  tabTracesEl.classList.toggle("active", tab === "traces");
+  tabCacheEl.classList.toggle("active", tab === "cache");
+  if (tab === "cache") showCachePanel();
+  else showTraceList();
+}
+
+// 小工具：造一个带 class / 文本的元素（这一节的渲染都用它，省重复代码）
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+// ---------- 链路列表 ----------
+async function showTraceList() {
+  const seq = beginTraceView();
+  traceBodyEl.appendChild(el("div", "trace-empty", "正在读取链路…"));
+  try {
+    const res = await fetch("/api/traces");
+    const data = await res.json();
+    if (!isCurrentTraceView(seq)) return;    // 已经切到别的标签页了，丢弃
+    const traces = data.traces || [];
+    traceBodyEl.innerHTML = "";
+    if (!traces.length) {
+      traceBodyEl.appendChild(el("div", "trace-empty",
+        "还没有链路记录。发一条消息之后，这里就会出现完整执行链路。"));
+      return;
+    }
+    traces.forEach(function (t) { traceBodyEl.appendChild(buildTraceItem(t)); });
+  } catch (err) {
+    if (!isCurrentTraceView(seq)) return;
+    traceBodyEl.innerHTML = "";
+    traceBodyEl.appendChild(el("div", "trace-empty", "读取失败：确认后端服务在运行"));
+  }
+}
+
+function buildTraceItem(t) {
+  const item = el("div", "trace-item");
+  item.appendChild(el("div", "trace-item-title", t.user_preview || "（没有用户消息）"));
+  const head = el("div", "trace-item-head");
+  const ms = t.duration_ms || 0;
+  [t.started_at || "", "轮次 " + (t.rounds || 0), "耗时 " + (ms / 1000).toFixed(1) + "s"]
+    .forEach(function (x) { head.appendChild(el("span", "", x)); });
+  // 缓存命中率（没有 usage 的老链路不显示——那时候还没采集）
+  const u = t.usage;
+  if (u && u.hit_rate !== null && u.hit_rate !== undefined) {
+    head.appendChild(el("span", "trace-badge cache", "缓存 " + u.hit_rate + "%"));
+  }
+  head.appendChild(el("span",
+    "trace-badge" + (t.status === "error" ? " err" : ""),
+    t.status === "error" ? "出错" : (t.status === "interrupted" ? "中断" : "完成")));
+  if (t.source === "subagent") head.appendChild(el("span", "trace-badge sub", "子代理"));
+  item.appendChild(head);
+  item.addEventListener("click", function () { showTraceDetail(t.id); });
+  return item;
+}
+
+// ---------- 链路详情 ----------
+async function showTraceDetail(id) {
+  const seq = beginTraceView();
+  traceBodyEl.appendChild(el("div", "trace-empty", "正在读取链路…"));
+  try {
+    const res = await fetch("/api/traces/" + encodeURIComponent(id));
+    if (!isCurrentTraceView(seq)) return;
+
+    traceBodyEl.innerHTML = "";
+    const back = el("button", "trace-back", "← 返回列表");
+    back.addEventListener("click", showTraceList);
+    traceBodyEl.appendChild(back);
+
+    if (!res.ok) {
+      traceBodyEl.appendChild(el("div", "trace-empty", "没有找到这条链路（可能已被清理）"));
+      return;
+    }
+    const t = await res.json();
+    if (!isCurrentTraceView(seq)) return;
+    traceBodyEl.appendChild(buildTraceDetail(t));
+  } catch (err) {
+    if (!isCurrentTraceView(seq)) return;
+    traceBodyEl.innerHTML = "";
+    traceBodyEl.appendChild(el("div", "trace-empty", "读取失败：确认后端服务在运行"));
+  }
+}
+
+function buildTraceDetail(t) {
+  const wrap = document.createElement("div");
+  const ms = t.duration_ms || 0;
+  const head = el("div", "trace-detail-head");
+  [
+    "时间：" + (t.started_at || "-"),
+    "耗时：" + (ms / 1000).toFixed(2) + "s",
+    "模型：" + (t.model || "-"),
+    "轮次：" + ((t.rounds || []).length),
+    "工作区：" + (t.workspace || "项目目录"),
+    "状态：" + (t.status === "ok" ? "完成" : (t.status || "-")),
+  ].forEach(function (x) { head.appendChild(el("span", "", x)); });
+
+  // 整条链路的缓存命中（没有就是老链路，或者端点没回 usage）
+  if (t.usage && t.usage.hit_rate !== null && t.usage.hit_rate !== undefined) {
+    head.appendChild(el("span", "",
+      "缓存命中：" + t.usage.hit_rate + "%（" +
+      fmtTokens(t.usage.cache_hit_tokens) + " / " +
+      fmtTokens(t.usage.cache_hit_tokens + t.usage.cache_miss_tokens) + "）"));
+  }
+  wrap.appendChild(head);
+
+  if (t.error) wrap.appendChild(el("div", "trace-reasoning", "错误：" + t.error));
+
+  (t.rounds || []).forEach(function (r) { wrap.appendChild(buildTraceRound(r)); });
+
+  if (t.final_text) {
+    wrap.appendChild(el("div", "trace-section-title", "最终输出"));
+    wrap.appendChild(el("div", "trace-footer-text", t.final_text));
+  }
+  return wrap;
+}
+
+function buildTraceRound(r) {
+  const d = document.createElement("details");
+  d.className = "trace-round";
+  if ((r.index || 0) === 0) d.open = true;   // 第一轮默认展开
+
+  const ru = r.usage;
+  let usageTag = "";
+  if (ru) {
+    usageTag = " · 输入 " + fmtTokens(ru.prompt_tokens) +
+      " · 缓存 " + (ru.hit_rate === null || ru.hit_rate === undefined ? "—" : ru.hit_rate + "%");
+  }
+
+  d.appendChild(el("summary", "trace-round-head",
+    "第 " + ((r.index || 0) + 1) + " 轮 · " + (r.duration_ms || 0) + "ms · " +
+    "请求 " + (((r.request || {}).message_count) || 0) + " 条消息 · " +
+    "工具 " + ((r.tool_calls || []).length) + " 次" + usageTag));
+
+  const body = el("div", "trace-round-body");
+
+  // 小标题的编号是动态的：老链路没有 usage，就不会出现"①"却直接跳到"②"
+  const NUMS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨"];
+  let sectionNo = 0;
+  function nextSection(title) {
+    body.appendChild(el("div", "trace-section-title",
+      (NUMS[sectionNo] || (sectionNo + 1) + ".") + " " + title));
+    sectionNo += 1;
+  }
+
+  // 本轮用量：命中多少、未命中多少、输出多少
+  if (ru) {
+    nextSection("本轮用量");
+    body.appendChild(buildUsageLine(ru));
+  }
+
+  // ① 上下文结构（逐条消息，点开看全文）
+  const req = r.request || {};
+  const toolsText = (req.tools || []).join(", ") || "无";
+  nextSection("发给模型的上下文结构（" + (req.messages || []).length + " 条）· 工具：" + toolsText);
+  (req.messages || []).forEach(function (m) {
+    const msg = document.createElement("details");
+    msg.className = "trace-msg role-" + (m.role || "unknown");
+    const label = { system: "系统", user: "用户", assistant: "助手", tool: "工具结果" }[m.role]
+      || (m.role || "?");
+    const preview = (m.content || "").replace(/\n/g, " ").slice(0, 70);
+    const callsTag = m.tool_calls ? ("［调用 " + m.tool_calls.length + " 个工具］") : "";
+    msg.appendChild(el("summary", "trace-msg-role", label + callsTag + "：" + preview));
+
+    let content = m.content || "";
+    if (m.tool_calls) {
+      m.tool_calls.forEach(function (tc) {
+        content += "\n→ " + ((tc.function || {}).name || "?") +
+          "(" + ((tc.function || {}).arguments || "") + ")";
+      });
+    }
+    msg.appendChild(el("div", "trace-msg-content", content || "（空）"));
+    body.appendChild(msg);
+  });
+
+  // ② 思考过程
+  nextSection("模型思考过程");
+  body.appendChild(el("div", "trace-reasoning", r.reasoning || "（本轮没有思考内容）"));
+
+  // ③ 本轮输出
+  if (r.text) {
+    nextSection("模型输出（本轮）");
+    body.appendChild(el("div", "trace-footer-text", r.text));
+  }
+
+  // ④ 工具调用
+  if ((r.tool_calls || []).length) {
+    nextSection("工具调用");
+    r.tool_calls.forEach(function (c) {
+      const box = el("div", "trace-tool");
+      box.appendChild(el("div", "trace-tool-meta",
+        "工具：" + c.name + " · 耗时 " + (c.duration_ms || 0) + "ms · " +
+        (c.ok ? "成功" : "失败")));
+      box.appendChild(el("div", "", "参数：" + JSON.stringify(c.arguments || {})));
+      box.appendChild(el("div", "", "结果：" + (c.result || "")));
+      body.appendChild(box);
+    });
+  }
+
+  d.appendChild(body);
+  return d;
+}
+
+// ============================================================
+// 六·五、API Key 配置
+// ------------------------------------------------------------
+// 三条硬规矩（对应需求）：
+//   ① 后端只回「配没配」+ 一串星号，明文 Key 永不下发到浏览器；
+//   ② 已配置时输入框是只读的星号，点它才变成可编辑的空框，用来填新 Key 覆盖；
+//   ③ 只有点「保存」才 POST 生效；取消 / ✕ / 点遮罩 / Esc 一律不发请求，
+//      弹层里改过的东西全部丢弃。
+// ============================================================
+let keyConfigured = false;  // 当前是否已配置
+let keyEdited = false;      // 用户是否点开了掩码、真的准备填新 Key
+
+function resetKeyForm() {
+  keyEdited = false;
+  keyErrEl.textContent = "";
+  keySaveBtnEl.disabled = true;
+  keySaveBtnEl.textContent = "保存";
+  keyInputEl.value = "";
+  keyInputEl.type = "password";
+  keyInputEl.readOnly = false;
+  keyInputEl.disabled = false;
+  keyInputEl.classList.remove("masked");
+  keyInputEl.placeholder = "sk-...";
+}
+
+// 把输入框刷成「已配置 + 纯星号掩码」。明文一律不进 DOM。
+function fillMasked(d) {
+  keyConfigured = true;
+  keyEdited = false;
+  keySaveBtnEl.disabled = true;
+  keySaveBtnEl.textContent = "保存";
+  keyErrEl.textContent = "";
+  keyBtnEl.classList.add("configured");
+  keyStateEl.textContent = "已配置 Key（明文不会显示）";
+  // 用 text 类型：password 会把每个字符再套一层圆点，反而分不清是掩码还是输入
+  keyInputEl.type = "text";
+  keyInputEl.value = d.masked || "••••••••••••••••";
+  keyInputEl.readOnly = true;
+  keyInputEl.classList.add("masked");
+  keyInputEl.placeholder = "";
+}
+
+function showKeyStatus(d) {
+  keyConfigured = !!d.configured;
+  keyBtnEl.classList.toggle("configured", keyConfigured);
+  if (keyConfigured) {
+    fillMasked(d);
+    const origin = d.source === "saved" ? "Key 来自界面保存。" : "Key 来自 config.py。";
+    keyHintEl.textContent = origin +
+      "点上面的星号框可填入新 Key 覆盖原来的；只有点「保存」才生效。";
+  } else {
+    keyStateEl.textContent = "还没有配置 API Key";
+    keyInputEl.type = "password";
+    keyHintEl.textContent = "填入以 sk- 开头的 Key，点「保存」后立即生效，无需重启服务。";
+  }
+}
+
+async function openKeyPanel() {
+  keyOverlayEl.classList.remove("hidden");
+  resetKeyForm();
+  keyStateEl.textContent = "正在读取配置…";
+  keyHintEl.textContent = "";
+  keyInputEl.disabled = true;
+  try {
+    const res = await fetch("/api/key", { cache: "no-store" });
+    const d = await res.json();
+    keyInputEl.disabled = false;
+    showKeyStatus(d);
+  } catch (e) {
+    keyInputEl.disabled = false;
+    keyStateEl.textContent = "读取失败：确认后端服务在运行";
+    keyErrEl.textContent = String(e);
+  }
+}
+
+function closeKeyPanel() {
+  // 取消 = 什么也不做：不发请求、不写状态、不碰 config，改动全部丢弃
+  keyOverlayEl.classList.add("hidden");
+  resetKeyForm();
+}
+
+// 点击「已配置」的星号框 → 变成可编辑的空框，准备覆盖
+keyInputEl.addEventListener("click", function () {
+  if (keyConfigured && !keyEdited) {
+    keyEdited = true;
+    keyInputEl.type = "password";
+    keyInputEl.value = "";
+    keyInputEl.readOnly = false;
+    keyInputEl.classList.remove("masked");
+    keyInputEl.placeholder = "输入新的 API Key（保存后覆盖原来的）";
+    keyInputEl.focus();
+    keyErrEl.textContent = "";
+  }
+});
+
+keyInputEl.addEventListener("input", function () {
+  keyEdited = true;
+  keySaveBtnEl.disabled = !keyInputEl.value.trim();
+  keyErrEl.textContent = "";
+});
+
+keySaveBtnEl.addEventListener("click", async function () {
+  const newKey = keyInputEl.value.trim();
+  if (!keyEdited || !newKey) return;   // 还是星号 / 空框，不许提交
+
+  keySaveBtnEl.disabled = true;
+  keySaveBtnEl.textContent = "保存中…";
+  keyErrEl.textContent = "";
+  try {
+    const res = await fetch("/api/key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: newKey }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || "保存失败");
+    // 保存成功：界面回到「已配置 + 星号」，明文不留在输入框里
+    fillMasked(d);
+    keyHintEl.textContent = "已保存并立即生效，无需重启服务。点星号框可再次覆盖。";
+  } catch (e) {
+    keySaveBtnEl.disabled = false;
+    keySaveBtnEl.textContent = "保存";
+    keyErrEl.textContent = "保存失败：" + e.message;
+  }
+});
+
+keyBtnEl.addEventListener("click", openKeyPanel);
+keyCancelBtnEl.addEventListener("click", closeKeyPanel);
+keyCloseEl.addEventListener("click", closeKeyPanel);
+keyOverlayEl.addEventListener("click", function (e) {
+  if (e.target === keyOverlayEl) closeKeyPanel();
+});
+
+// 首屏只刷一下左下角按钮的视觉，不打开弹窗、不拖慢渲染
+async function refreshKeyBadge() {
+  try {
+    const res = await fetch("/api/key", { cache: "no-store" });
+    const d = await res.json();
+    keyBtnEl.classList.toggle("configured", !!d.configured);
+    keyBtnEl.title = d.configured
+      ? "已配置 API Key（点开可查看状态或覆盖）"
+      : "配置大模型 API Key（保存后立即生效）";
+  } catch (e) { /* 后端没起来就算了，按钮保持默认 */ }
+}
+
+// ============================================================
+// 六·B、缓存命中：把 usage 账本画成图表
+// ------------------------------------------------------------
+// 数据来源：GET /api/cache → tracing.usage_stats()
+//   命中率 = 命中 token ÷（命中 + 未命中）
+//   绿 = 命中（省钱的），灰 = 未命中（按原价计的）
+// ============================================================
+
+// 数字格式化：12345 → 12.3k（图表里字很小，别塞长数字）
+function fmtTokens(n) {
+  n = Number(n) || 0;
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  return String(Math.round(n));
+}
+
+// 横向堆叠条：命中段按比例撑开，剩下的给未命中
+function buildStackBar(hit, miss, cls) {
+  const bar = el("div", cls || "cache-bar");
+  const total = (hit || 0) + (miss || 0);
+  if (total > 0) {
+    const h = el("div", "hit");
+    h.style.width = ((hit || 0) / total * 100) + "%";
+    const m = el("div", "miss");
+    m.style.width = ((miss || 0) / total * 100) + "%";
+    bar.appendChild(h);
+    bar.appendChild(m);
+  }
+  return bar;
+}
+
+// 一轮 / 一条链路用量的文字 + 小条（链路详情里用）
+function buildUsageLine(u) {
+  const box = el("div", "cache-usage");
+  box.appendChild(buildStackBar(u.cache_hit_tokens, u.cache_miss_tokens));
+  const rate = (u.hit_rate === null || u.hit_rate === undefined) ? "—" : u.hit_rate + "%";
+  box.appendChild(el("div", "cache-note",
+    "输入 " + (u.prompt_tokens || 0).toLocaleString() + " tok" +
+    "（命中 " + (u.cache_hit_tokens || 0).toLocaleString() +
+    " / 未命中 " + (u.cache_miss_tokens || 0).toLocaleString() + "）" +
+    " · 命中率 " + rate +
+    " · 输出 " + (u.completion_tokens || 0).toLocaleString() + " tok"));
+  return box;
+}
+
+async function showCachePanel() {
+  const seq = beginTraceView();
+  traceBodyEl.appendChild(el("div", "trace-empty", "正在统计用量…"));
+  try {
+    const res = await fetch("/api/cache");
+    const data = await res.json();
+    if (!isCurrentTraceView(seq)) return;    // 已经切走了，别覆盖别人的画面
+    traceBodyEl.innerHTML = "";
+    traceBodyEl.appendChild(buildCachePanel(data));
+  } catch (err) {
+    if (!isCurrentTraceView(seq)) return;
+    traceBodyEl.innerHTML = "";
+    traceBodyEl.appendChild(el("div", "trace-empty", "读取失败：确认后端服务在运行"));
+  }
+}
+
+function buildCachePanel(data) {
+  const wrap = el("div", "cache-wrap");
+  const totals = data.totals || {};
+  const requests = totals.requests || 0;
+
+  // 一条数据都没有：说清"为什么空"，别让人以为坏了
+  if (!requests) {
+    const box = el("div", "cache-empty");
+    box.textContent =
+      "还没有可统计的用量。\n" +
+      "命中率来自每次请求返回的 usage（prompt_cache_hit_tokens / prompt_cache_miss_tokens），" +
+      "发出第一条消息后这里就会开始积累。\n" +
+      "之前的历史链路没有记录 usage，无法回溯补算。";
+    wrap.appendChild(box);
+    return wrap;
+  }
+
+  const rate = totals.hit_rate;
+  const hit = totals.cache_hit_tokens || 0;
+  const miss = totals.cache_miss_tokens || 0;
+  const prompt = totals.prompt_tokens || 0;
+
+  // ---------- ① KPI ----------
+  const kpis = el("div", "cache-kpis");
+
+  const hero = el("div", "cache-kpi hero" + (rate !== null && rate < 40 ? " low" : ""));
+  hero.appendChild(el("div", "cache-kpi-label", "缓存命中率"));
+  const hv = el("div", "cache-kpi-value", rate === null ? "—" : String(rate));
+  if (rate !== null) hv.appendChild(el("small", "", "%"));
+  hero.appendChild(hv);
+  hero.appendChild(el("div", "cache-kpi-sub",
+    rate === null ? "服务端没回缓存字段"
+                  : "命中 " + fmtTokens(hit) + " / 输入 " + fmtTokens(prompt)));
+  kpis.appendChild(hero);
+
+  [
+    ["输入 token", fmtTokens(prompt), "命中 " + fmtTokens(hit) + " · 未命中 " + fmtTokens(miss)],
+    ["请求次数", String(requests), (totals.cache_reported_requests || 0) + " 次带缓存回报"],
+    ["输出 token", fmtTokens(totals.completion_tokens || 0), "completion_tokens 累计"],
+  ].forEach(function (item) {
+    const card = el("div", "cache-kpi");
+    card.appendChild(el("div", "cache-kpi-label", item[0]));
+    card.appendChild(el("div", "cache-kpi-value", item[1]));
+    card.appendChild(el("div", "cache-kpi-sub", item[2]));
+    kpis.appendChild(card);
+  });
+  wrap.appendChild(kpis);
+
+  // ---------- ② 总体构成 ----------
+  const barCard = el("div", "cache-card");
+  barCard.appendChild(el("div", "cache-card-title", "总体构成（按输入 token）"));
+  barCard.appendChild(buildStackBar(hit, miss));
+  const legend = el("div", "cache-legend");
+  const l1 = el("span", "");
+  l1.appendChild(el("i", "hit"));
+  l1.appendChild(document.createTextNode("命中 " + fmtTokens(hit)));
+  const l2 = el("span", "");
+  l2.appendChild(el("i", "miss"));
+  l2.appendChild(document.createTextNode("未命中 " + fmtTokens(miss)));
+  legend.appendChild(l1);
+  legend.appendChild(l2);
+  barCard.appendChild(legend);
+  wrap.appendChild(barCard);
+
+  // ---------- ③ 按天柱状图 ----------
+  const series = data.series || [];
+  if (series.length) {
+    const card = el("div", "cache-card");
+    card.appendChild(el("div", "cache-card-title",
+      "按天命中率（最近 " + series.length + " 天）"));
+
+    const days = el("div", "cache-days");
+    const maxTotal = Math.max.apply(null, series.map(function (d) {
+      return (d.cache_hit_tokens || 0) + (d.cache_miss_tokens || 0);
+    }).concat([1]));
+
+    series.forEach(function (d) {
+      const total = (d.cache_hit_tokens || 0) + (d.cache_miss_tokens || 0);
+      const col = el("div", "cache-day");
+      col.title = d.date +
+        " · 输入 " + (d.prompt_tokens || 0).toLocaleString() + " tok" +
+        " · 命中率 " + (d.hit_rate === null ? "—" : d.hit_rate + "%");
+      col.appendChild(el("div", "cache-day-rate",
+        d.hit_rate === null ? "—" : d.hit_rate + "%"));
+
+      const bar = el("div", "cache-day-bar");
+      // 高度按"当天输入量 ÷ 全期最大输入量"缩放；最小 3% 留个可见的底
+      bar.style.height = Math.max(3, total / maxTotal * 78) + "%";
+      const h = el("div", "hit");
+      h.style.height = (total ? (d.cache_hit_tokens || 0) / total * 100 : 0) + "%";
+      const m = el("div", "miss");
+      m.style.height = (total ? (d.cache_miss_tokens || 0) / total * 100 : 100) + "%";
+      bar.appendChild(h);
+      bar.appendChild(m);
+
+      col.appendChild(bar);
+      col.appendChild(el("div", "cache-day-date", d.date.slice(5)));
+      days.appendChild(col);
+    });
+    card.appendChild(days);
+    wrap.appendChild(card);
+  }
+
+  // ---------- ④ 最近任务 ----------
+  const recent = data.recent || [];
+  if (recent.length) {
+    const card = el("div", "cache-card");
+    card.appendChild(el("div", "cache-card-title", "最近任务"));
+    recent.forEach(function (r) {
+      const u = r.usage || {};
+      const row = el("div", "cache-row");
+      row.title = r.user_preview || "";
+      row.appendChild(el("div", "cache-row-time", (r.started_at || "").slice(11, 16) || "--:--"));
+      row.appendChild(el("div", "cache-row-preview", r.user_preview || "（没有用户消息）"));
+      row.appendChild(buildStackBar(u.cache_hit_tokens, u.cache_miss_tokens, "cache-row-bar"));
+      row.appendChild(el("div", "cache-row-rate",
+        (u.hit_rate === null || u.hit_rate === undefined) ? "—" : u.hit_rate + "%"));
+      row.appendChild(el("div", "cache-row-tokens", fmtTokens(u.prompt_tokens)));
+      card.appendChild(row);
+    });
+    wrap.appendChild(card);
+  }
+
+  // ---------- ⑤ 口径说明 ----------
+  const note = el("div", "cache-card");
+  note.appendChild(el("div", "cache-card-title", "口径说明"));
+  note.appendChild(el("div", "cache-note",
+    "命中率 = 缓存命中 token ÷（命中 + 未命中），只统计服务端回了缓存字段的请求。" +
+    "同一会话里第 1 轮必然全部未命中（缓存要先把前缀写进去），之后带着更长的历史重发，" +
+    "前缀没变的部分就能命中。\n" +
+    "压缩上下文、改系统提示词、换工作区都会让前缀变化——命中率掉一截是正常现象，不是故障。"));
+  wrap.appendChild(note);
+
+  return wrap;
+}
+
+// ============================================================
+// 七、启动：页面打开时，先读状态，再画出界面
+// ============================================================
+async function init() {
+  refreshKeyBadge();   // 不 await，别拖慢首屏
+  // 1. 从后端读取状态
+  //    （后端是"回放事件日志"推导出来的，对前端来说和以前一模一样，无感）
+  try {
+    const res = await fetch("/api/state");
+    const data = await res.json();
+    state.conversations = data.conversations || [];
+    state.current_id = data.current_id || null;
+    if (data.context_config) {
+      contextConfig = data.context_config;   // 后端配置（窗口大小/压缩阈值/保留条数）
+    }
+  } catch (err) {
+    console.warn("读取状态失败（后端没启动？）：", err);
+    // 读不到也没关系，就用空数据继续
+  }
+
+  // 2. 一个会话都没有（第一次使用）→ 自动新建一个
+  if (state.conversations.length === 0) {
+    await createConversation();
+    return;
+  }
+
+  // 3. 上次打开的会话如果不存在了（比如被删了）→ 打开第一个
+  const exists = state.conversations.some(function (c) { return c.id === state.current_id; });
+  if (!exists) state.current_id = state.conversations[0].id;
+
+  renderAll();
+}
+
+// ---------- 事件绑定 ----------
+newBtn.addEventListener("click", createConversation);
+
+// 图片输入：点「图片」选文件；在输入框里 Ctrl+V 粘贴截图
+imgBtnEl.addEventListener("click", function () { imgFileEl.click(); });
+imgFileEl.addEventListener("change", function () {
+  for (const f of imgFileEl.files) addPendingImage(f);
+  imgFileEl.value = "";   // 清空，允许重复选同一张图
+});
+input.addEventListener("paste", function (e) {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  for (const it of items) {
+    if (it.type && it.type.startsWith("image/")) {
+      e.preventDefault();   // 拦住"粘贴成路径文字"的默认行为
+      const f = it.getAsFile();
+      if (f) addPendingImage(f);
+    }
+  }
+});
+
+// 链路日志：左下角按钮打开；关闭按钮 / 点遮罩 / Esc 都能关
+traceBtnEl.addEventListener("click", openTracePanel);
+traceCloseEl.addEventListener("click", closeTracePanel);
+tabTracesEl.addEventListener("click", function () { switchTraceTab("traces"); });
+tabCacheEl.addEventListener("click", function () { switchTraceTab("cache"); });
+traceOverlayEl.addEventListener("click", function (e) {
+  if (e.target === traceOverlayEl) closeTracePanel();
+});
+document.addEventListener("keydown", function (e) {
+  if (e.key !== "Escape") return;
+  // 两个弹层都在时先关上面那层（Key 的 z-index 更高）
+  if (!keyOverlayEl.classList.contains("hidden")) {
+    closeKeyPanel();
+  } else if (!traceOverlayEl.classList.contains("hidden")) {
+    closeTracePanel();
+  }
+});
+
+// 工作区标签：点开小菜单；菜单里的按钮分流到三种方式
+workspaceTagEl.addEventListener("click", toggleWorkspaceMenu);
+
+// ---------- 完整权限开关 ----------
+// 关（默认）：agent 只能在「工作区」里读写。
+// 开：允许读写工作区以外的路径——用来处理"素材在别的盘、项目在这里"这类情况。
+// 状态挂在会话对象上，刷新页面就回到关闭（安全默认）。
+function syncFullAccess() {
+  const conv = currentConv();
+  const on = !!(conv && conv.fullAccess);
+  fullAccessChkEl.checked = on;
+  fullAccessTagEl.classList.toggle("on", on);
+  fullAccessTextEl.textContent = on ? "完整权限：开" : "完整权限";
+}
+
+// ★ 这里原本用 confirm() 做二次确认，是「点击无反馈」的元凶：
+//   嵌入式浏览器 / 预览面板会把模态弹窗静默取消（直接返回 false），
+//   于是每次勾上都被立刻弹回，看起来就是点了没反应。
+//   改成点一下直接切换，靠红色胶囊 + 「完整权限：开」给出明确反馈，
+//   风险说明放在 label 的 title 里，不再拦路。
+// ★ 事件绑在 label 上并 preventDefault()：自己接管状态，不让浏览器再
+//   toggle 一次 checkbox；syncFullAccess() 是唯一的权威渲染出口。
+fullAccessTagEl.addEventListener("click", function (e) {
+  e.preventDefault();
+  const conv = currentConv();
+  if (!conv) {
+    syncFullAccess();
+    return;
+  }
+  conv.fullAccess = !conv.fullAccess;
+  syncFullAccess();
+});
+document.querySelectorAll("#workspaceMenu button").forEach(function (menuBtn) {
+  menuBtn.addEventListener("click", function () {
+    workspaceMenuEl.classList.add("hidden");   // 点了就收起菜单
+    const action = menuBtn.getAttribute("data-action");
+    if (action === "pick") pickWorkspace();
+    else if (action === "manual") manualWorkspace();
+    else if (action === "reset") resetWorkspace();
+  });
+});
+
+// 上下文计量：点击弹开详情面板；"立即压缩"按钮
+contextMeterEl.addEventListener("click", toggleContextPanel);
+compactNowBtn.addEventListener("click", manualCompact);
+
+// 点页面其他地方 → 自动收起那些小面板
+document.addEventListener("click", function (e) {
+  if (!e.target.closest("#workspaceBar")) {
+    workspaceMenuEl.classList.add("hidden");
+    contextPanelEl.classList.add("hidden");
+  }
+});
+btn.addEventListener("click", function () {
+  if (sending) {
+    stopStreaming();   // 生成中 → 这个按钮就是"停止"
+  } else {
+    sendMessage();
+  }
+});
+input.addEventListener("keydown", function (e) {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();     // 生成中 sendMessage 会自己忽略（防止重复发送）
+  }
+});
+
+// 出发！（脚本在 body 末尾，此时页面元素已经全部就绪）
+init();
+</script>
+</body>
+</html>

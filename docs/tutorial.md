@@ -423,11 +423,11 @@ HTTP 接口表见 [`../README.md#http-接口`](../README.md#http-接口)。
 
 顶栏右边可以在 **任务队列 / 助手** 之间切。助手是个聊天窗口：说需求，它整理成结构化任务丢进队列，**丢完立刻回来**，不等任务跑完。
 
-它和任务队列是两个进程：
+它和任务队列是两个进程（**同一个仓库里的两份代码**）：
 
 ```
-浏览器 ──┬─ 任务队列：FastAPI（8788）REST + WebSocket
-         └─ 助手页：iframe → 助手进程（8001）
+浏览器 ──┬─ 任务队列：FastAPI（8788）REST + WebSocket ← codingstorm/
+         └─ 助手页：iframe → 助手进程（8001）        ← assistant/
 ```
 
 - **能做什么**：看项目列表、看项目上下文、看最近任务、建任务。工具白名单只有这四个。
@@ -438,20 +438,20 @@ HTTP 接口表见 [`../README.md#http-接口`](../README.md#http-接口)。
 启动：
 
 ```bash
-# 手动（助手目录在 codingstorm 之外）
-cd D:/project/codingstorm-assistant && start-assistant.bat
+# 手动（在仓库根目录进 assistant/）
+cd assistant && start-assistant.bat
 ```
 
 ```toml
-# 或者让平台启动时顺手拉起
+# 或者让平台启动时顺手拉起；dir 留空会自动找到仓库里的 assistant/
 [assistant]
 autostart = true
-dir = "D:/project/codingstorm-assistant"
 ```
 
-助手没起来时，「助手」页会显示具体原因（没配 dir / 目录里没有 server.py / 端口没应答）和「启动助手」按钮；点一下就会拉起并把日志写到 `{root}/logs/assistant.log`。
+助手没起来时，「助手」页会显示具体原因（找不到 assistant/server.py / 端口没应答）和「启动助手」按钮；点一下就会拉起并把日志写到 `{root}/logs/assistant.log`。
 
 > Key：优先 `[assistant] api_key`，留空则复用 `[claude.env]` 的 `ANTHROPIC_AUTH_TOKEN`。
+> 助手配置模板是 `assistant/config.example.py`（已是需求分析师版）；本地 `assistant/config.py` 被忽略，不进版本库。
 
 ---
 

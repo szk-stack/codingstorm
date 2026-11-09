@@ -1,0 +1,513 @@
+/*
+ * theme-tech.css —— 「冷调精密」主题层
+ * ---------------------------------------------------------------------------
+ * 设计方向：浅色 · 科技极简。不是深色发光赛博风，而是「仪器面板 / 工程坐标纸」：
+ *   · 冷调中性（hue 250，带极轻蓝味，绝不是纯灰）承担 90% 面积
+ *   · 单一电蓝只出现在主操作、聚焦、选中、状态指示，约 10%
+ *   · 层级靠 1px 发丝线 + 留白 + 字重建立，阴影几乎退场
+ *   · 圆角收敛到 2–4px，像切割过的金属面板，不做消费级胶囊
+ *
+ * 组织方式：这是**覆盖层**，只重定义 token 与视觉属性，
+ *   不碰 static/index.html 里原有的任何一条 CSS 与 JS。
+ *   想回到原来的「暖纸墨」主题，删掉 index.html 里那一行 <link> 即可。
+ *
+ * 约束（来自 .impeccable.md）：原生 CSS、系统字体、运行时不拉外部资源。
+ */
+
+/* ============================================================
+   一、Token 重定义
+   ------------------------------------------------------------
+   保留原有全部变量名（组件样式都在引用它们），只换值。
+   OKLCH 是感知均匀色彩空间：等亮度步长看起来才真的等距。
+   ============================================================ */
+:root {
+  /* ---- 原始层：冷调中性阶（hue 250，chroma 随深度略增，避免死灰）---- */
+  --n50:  oklch(0.993 0.003 250);  /* 极冷白 · 卡面 */
+  --n100: oklch(0.976 0.005 250);  /* 页面底 */
+  --n150: oklch(0.955 0.007 250);  /* 浅底 · 悬浮 */
+  --n200: oklch(0.928 0.009 250);  /* 悬浮加深 */
+  --n300: oklch(0.888 0.011 250);  /* 发丝分隔线 */
+  --n400: oklch(0.680 0.016 250);  /* 强边框 / 控件边框 */
+  --n500: oklch(0.560 0.019 250);  /* 辅助文字（≥4.5:1）*/
+  --n600: oklch(0.470 0.021 250);  /* 次级文字 */
+  --n700: oklch(0.370 0.023 250);
+  --n800: oklch(0.255 0.025 250);  /* 主文字 · 石板墨（≥12:1）*/
+
+  /* ---- 主色：电蓝 / 靛青 ---- */
+  --p600: oklch(0.480 0.155 258);  /* 主操作（白字 ≥5:1）*/
+  --p700: oklch(0.405 0.135 258);  /* 加深 / hover */
+  --p100: oklch(0.945 0.028 258);  /* 主色浅底 */
+  --p200: oklch(0.875 0.058 258);  /* 主色浅边 / 焦点环 */
+
+  /* ---- 语义色：同样偏冷，避免暖色破坏整体温度 ---- */
+  --d600: oklch(0.525 0.165 25);   /* 错误 · 冷朱 */
+  --d100: oklch(0.952 0.024 25);
+  --d200: oklch(0.885 0.048 25);
+  --s600: oklch(0.505 0.105 162);  /* 成功 · 冷松绿 */
+  --w600: oklch(0.610 0.115 72);   /* 警告 */
+  --w100: oklch(0.955 0.028 72);
+  --y600: oklch(0.480 0.065 285);  /* 系统自发动作 · 冷蓝紫 */
+  --y300: oklch(0.790 0.045 285);
+  --y200: oklch(0.885 0.032 285);
+  --y100: oklch(0.952 0.016 285);
+
+  /* ---- 排版：更少的级数、更大的跨度；正文 16px 达标 ---- */
+  --font-sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", monospace;
+  --fs-xs:  12px;   /* 元数据 / 标签 */
+  --fs-sm:  13px;   /* 次要 UI */
+  --fs-md:  14px;   /* 列表 / 按钮 */
+  --fs-lg:  16px;   /* 正文 / 消息 */
+  --fs-xl:  18px;   /* 小标题 */
+  --fs-2xl: 22px;   /* 标题 */
+  --lh-tight:   1.35;
+  --lh-base:    1.65;
+  --lh-relaxed: 1.8;
+
+  /* ---- 间距：沿用原 4px 网格，不动（改了会牵动整页布局）---- */
+
+  /* ---- 圆角：从「气泡」收敛为「面板」 ---- */
+  --r-xs:  2px;
+  --r-sm:  2px;
+  --r-md:  3px;
+  --r-lg:  4px;
+  --r-full: 999px;  /* 只留给进度条这类真正的细长条 */
+
+  /* ---- 阴影：浅色体系里几乎退场，弹层保留极轻的一层 ---- */
+  --shadow-sm:  none;
+  --shadow-pop: 0 12px 36px oklch(0.255 0.025 250 / 0.14),
+                0 1px 2px  oklch(0.255 0.025 250 / 0.06);
+
+  /* ---- 动效：指数缓动，无回弹 ---- */
+  --ease-out:      cubic-bezier(0.25, 1, 0.5, 1);       /* quart */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);       /* expo · 弹层入场 */
+  --dur-fast: 0.12s;
+  --dur-base: 0.22s;
+
+  /* ---- 主题层新增 ---- */
+  --accent-vivid: oklch(0.610 0.175 258);  /* 只用于 2px 指示条 / 刻度，不承担文字 */
+  --bg-code:      oklch(0.245 0.022 250);  /* 代码是另一种介质：深石板窗口 */
+  --text-on-code: oklch(0.930 0.008 250);
+  --grid-dot:     oklch(0.620 0.020 250 / 0.11);  /* 坐标纸钉点，极淡 */
+  --overlay-ink:  oklch(0.255 0.025 250 / 0.38); /* 遮罩：冷墨，不带暖味 */
+}
+
+/* ============================================================
+   二、页面基础与全局打磨
+   ============================================================ */
+body {
+  font-variant-numeric: tabular-nums;      /* 数字对齐：百分比、时间戳不跳动 */
+  font-kerning: normal;
+  letter-spacing: 0.005em;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--p200); color: var(--n800); }
+
+/* 补一条全局规则：原样式表里 .hidden 只和具体 id 搭配定义过，
+   导致 <input id="imgFile" class="hidden"> 这类元素其实一直可见，
+   在底部露出一行原生「选择文件」。所有 #xxx.hidden 规则特异性更高，
+   同为 display:none，不会冲突。*/
+.hidden { display: none; }
+
+/* 统一的键盘焦点：可见、但不喧哗 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 细滚动条 —— 长时间读代码时，滚动条不该抢戏 */
+* { scrollbar-width: thin; scrollbar-color: var(--n400) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--n300);
+  border: 2px solid var(--bg-page);
+  border-radius: var(--r-full);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--n400); }
+
+/* ============================================================
+   三、左侧栏：仪器铭牌 + 直角列表
+   ============================================================ */
+#sidebar {
+  background: var(--bg-subtle);
+  border-right: 1px solid var(--border);
+}
+
+/* 记忆点①：型号铭牌。像面板上丝印的一行小字，不抢内容。
+   用大字距而非等宽字体来建立「精密」感（避免等宽装技术感的反模式）。*/
+#sidebar::before {
+  content: "codingstorm  /  需求助手";
+  display: block;
+  flex-shrink: 0;
+  padding: var(--sp-4) var(--sp-3) 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+#newBtn {
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
+}
+#newBtn:hover { background: var(--p100); color: var(--accent-strong); }
+#newBtn:active { transform: translateY(1px); }
+
+.conv-item {
+  position: relative;                 /* 给下面 active 的指示条做锚点 */
+  border-radius: 0;
+  padding-left: var(--sp-4);
+  font-size: var(--fs-md);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.conv-item:hover { background: var(--bg-hover); }
+.conv-item.active {
+  background: var(--bg-accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+/* 记忆点②：选中态用一条 2px 电蓝竖线，而不是整块填色 */
+.conv-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 4px; bottom: 4px;
+  width: 2px;
+  background: var(--accent-vivid);
+}
+.conv-item button { border-radius: var(--r-xs); }
+
+#keyBtn, #traceBtn {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  letter-spacing: 0.02em;
+  /* 两个入口都是被 flex 拉伸的宽条，文字对齐方式要一致。
+     原样式里 #keyBtn 单独写了 text-align:left，这里统一成居中。*/
+  text-align: center;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out);
+}
+#keyBtn:hover, #traceBtn:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  background: var(--bg-accent-soft);
+}
+#keyBtn.configured { border-color: var(--s600); }
+
+/* ============================================================
+   四、主区域：坐标纸 + 更清晰的标题
+   ============================================================ */
+#chatTitle {
+  /* 记忆点④：标题左侧一条 2×18px 电蓝短竖线，像面板上的「当前通道」标记。
+     用背景图而不是伪元素：#titleText 是 block，伪元素会把它挤成两行。*/
+  background-image: linear-gradient(var(--accent-vivid), var(--accent-vivid));
+  background-size: 2px 18px;
+  background-position: var(--sp-5) center;
+  background-repeat: no-repeat;
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding-left: calc(var(--sp-5) + 16px);
+}
+
+/* 记忆点③：极淡点阵。呼应项目「事件一行行往后刻」的日志哲学，
+   透明度低到不干扰阅读，只在空白处透出来。*/
+#chat {
+  padding: var(--sp-6);
+  gap: var(--sp-4);
+  background-image: radial-gradient(circle at 1px 1px, var(--grid-dot) 1px, transparent 0);
+  background-size: 24px 24px;
+  background-attachment: local;
+}
+
+/* ============================================================
+   五、消息：一边是「指令块」，一边是「纸上的记录」
+   ------------------------------------------------------------
+   去掉气泡的圆角与阴影：AI 回复像一条贴上去的记录，左侧一道细线断行；
+   用户消息保留实心块，形成明确的左右对照。这是本主题最核心的一处取舍。
+   ============================================================ */
+.msg {
+  border-radius: var(--r-sm);
+  font-size: var(--fs-lg);
+  line-height: var(--lh-base);
+}
+.msg.user {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border-bottom-right-radius: var(--r-sm);
+  box-shadow: none;
+}
+.msg.ai {
+  background: var(--bg-surface);       /* 不透明：挡住底下的点阵 */
+  border: none;
+  border-left: 2px solid var(--n500);  /* 比边框深一档，长回复也能看清断行 */
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  border-bottom-left-radius: var(--r-sm);
+  box-shadow: none;
+  padding-left: var(--sp-4);
+}
+.msg-wrap:hover .msg.ai { border-left-color: var(--accent-vivid); }
+.msg.ai h1, .msg.ai h2, .msg.ai h3 { letter-spacing: -0.01em; }
+.msg.ai h1 { font-size: var(--fs-2xl); }
+.msg.ai h2 { font-size: var(--fs-xl); }
+
+/* 行内代码：浅底细框；代码块：深石板窗口 —— 介质的区分是有意图的 */
+.msg.ai code {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-variant-ligatures: none;
+}
+.msg.ai pre {
+  background: var(--bg-code);
+  border: 1px solid var(--bg-code);
+  border-left: 2px solid var(--accent-vivid);
+  border-radius: var(--r-xs);
+  color: var(--text-on-code);
+  padding: var(--sp-3) var(--sp-4);
+}
+.msg.ai pre code {
+  background: none;
+  border: none;
+  color: var(--text-on-code);
+  padding: 0;
+}
+.msg.ai blockquote {
+  border-left: 2px solid var(--accent-vivid);
+  padding-left: var(--sp-3);
+}
+.msg.ai th, .msg.ai td { font-size: var(--fs-sm); }
+.msg.ai th { background: var(--bg-subtle); font-weight: 600; }
+.msg.ai hr { border-top: 1px solid var(--border); }
+.msg.ai .msg-image { border: 1px solid var(--border); }
+
+.msg.error {
+  background: var(--bg-danger-soft);
+  border-left: 2px solid var(--danger);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  color: var(--danger);
+}
+
+.msg-actions { transition: opacity var(--dur-fast) var(--ease-out); }
+.msg-actions button {
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.02em;
+}
+
+/* ============================================================
+   六、工具 / 子代理 / 压缩卡片：统一改成「线框记录」
+   ============================================================ */
+.tool-line { font-size: var(--fs-xs); letter-spacing: 0.03em; }
+
+.tool-card, .compact-card {
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--border-strong);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--bg-subtle);
+}
+.tool-card-head:hover, .compact-card-head:hover { background: var(--bg-hover); }
+.tool-card-body, .compact-card-body {
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+.tool-card.fail { border-left-color: var(--danger); }
+.tool-card.fail .tool-card-head { color: var(--danger); }
+
+.compact-card {
+  border-left-color: var(--border-system-strong);
+  background: var(--bg-system-soft);
+}
+.subagent-area { border-top: 1px dashed var(--border-system); }
+.subagent-toggle { border-radius: var(--r-xs); }
+.subagent-panel {
+  border-left: 2px solid var(--border-system-strong);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+
+/* ============================================================
+   七、底部输入区：面板化
+   ============================================================ */
+footer {
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-5) var(--sp-4);
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+}
+#workspaceBar { gap: var(--sp-2); }
+
+#workspaceTag, #fullAccessTag {
+  border-radius: var(--r-sm);          /* 去胶囊 */
+  font-size: var(--fs-xs);
+  letter-spacing: 0.02em;
+  padding: var(--sp-1) var(--sp-3);
+  background: transparent;
+}
+#workspaceTag:hover { border-color: var(--accent); color: var(--accent-strong); }
+#fullAccessTag.on {
+  color: var(--danger);
+  background: var(--bg-danger-soft);
+  border-color: var(--border-danger);
+  font-weight: 600;
+}
+#fullAccessTag input { accent-color: var(--danger); }
+
+#contextMeter { font-size: var(--fs-xs); letter-spacing: 0.03em; }
+#contextBar {
+  height: 3px;
+  background: var(--bg-sunken);
+  border-radius: 0;
+}
+#contextFill { border-radius: 0; }
+#contextMark { width: 1px; top: -3px; bottom: -3px; }
+
+#contextPanel, #workspaceMenu {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-pop);
+  background: var(--bg-surface);
+}
+#contextDetail { font-size: var(--fs-xs); }
+#compactNowBtn { border-radius: var(--r-xs); font-size: var(--fs-xs); }
+#workspaceMenu button { border-radius: var(--r-xs); font-size: var(--fs-sm); }
+
+#inputRow { gap: var(--sp-2); }
+#input {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-page);
+  color: var(--text-primary);
+  padding: var(--sp-3);
+  font-size: var(--fs-lg);
+  line-height: var(--lh-base);
+  transition: border-color var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out);
+}
+#input:focus,
+#input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--bg-accent-soft);
+}
+#input::placeholder { color: var(--text-muted); opacity: 1; }
+
+#btn {
+  border-radius: var(--r-sm);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0 var(--sp-6);
+  transition: background var(--dur-fast) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out);
+}
+#btn:hover { background: var(--accent-strong); }
+#btn:active { transform: translateY(1px); }
+#btn:disabled { background: var(--bg-subtle); color: var(--text-muted); }
+#btn.stopping:hover { filter: none; background: var(--d600); }
+
+#imgBtn {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  letter-spacing: 0.02em;
+}
+#imgBtn:hover { border-color: var(--accent); }
+
+.tray-item { border-radius: var(--r-xs); }
+.tray-remove {
+  background: oklch(0.255 0.025 250 / 0.72);
+  color: var(--n50);
+  border-radius: var(--r-xs);
+}
+.tray-remove:hover { background: var(--danger); }
+
+/* ============================================================
+   八、弹层：API Key / 链路日志
+   ============================================================ */
+#keyOverlay, #traceOverlay { background: var(--overlay-ink); }
+
+#keyModal, #traceModal {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-pop);
+  background: var(--bg-page);
+}
+#keyModalHead, #traceModalHead {
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  letter-spacing: 0.02em;
+}
+#keyClose, #traceClose { border-radius: var(--r-xs); }
+
+#keyInput {
+  border-radius: var(--r-sm);
+  background: var(--bg-surface);
+  border-color: var(--border-strong);
+  font-size: var(--fs-md);
+}
+#keyInput:focus,
+#keyInput:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--bg-accent-soft);
+}
+#keyInput.masked { letter-spacing: 0.22em; }
+#keyState { font-size: var(--fs-sm); }
+#keyHint { font-size: var(--fs-xs); }
+
+#keyFoot { border-top: 1px solid var(--border); }
+#keyFoot button { border-radius: var(--r-xs); font-size: var(--fs-sm); }
+#keyCancelBtn { border-color: var(--border-strong); }
+#keySaveBtn { font-weight: 600; }
+#keySaveBtn:active:not(:disabled) { transform: translateY(1px); }
+
+/* 链路日志内部：靠 token 自动跟随，这里只把圆角与线宽统一 */
+.trace-back { border-radius: var(--r-xs); }
+.trace-item { border-radius: var(--r-sm); }
+.trace-badge { border-radius: var(--r-xs); }
+.trace-round, .trace-msg { border-radius: var(--r-xs); }
+.trace-tool { border-radius: var(--r-xs); }
+
+/* ============================================================
+   九、动效：只动 transform / opacity，指数缓动，无回弹
+   ============================================================ */
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes veil-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+#keyOverlay:not(.hidden),
+#traceOverlay:not(.hidden) { animation: veil-in 160ms var(--ease-out) both; }
+#keyOverlay:not(.hidden) #keyModal,
+#traceOverlay:not(.hidden) #traceModal {
+  animation: panel-in 220ms var(--ease-out-expo) both;
+}
+
+/* 无障碍：前庭敏感用户关掉位移动画，但保留功能性的状态变化 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  #keyOverlay:not(.hidden) #keyModal,
+  #traceOverlay:not(.hidden) #traceModal { transform: none; }
+}

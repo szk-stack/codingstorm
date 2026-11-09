@@ -20,7 +20,7 @@ cs diff <任务id>          # 回来看它改了什么
 cs approve <任务id>       # 满意，合进主干
 ```
 
-**它不是什么**（免得一开始就想歪）：不是编辑器插件，也不是聊天窗口；**不会自动把代码合进主干**，每份改动都要你亲手批准；它需要一台能跑 `claude`、`pi` 或 `codebuddy` 命令的机器，你在自己电脑上发指令、服务端在那台机器上执行。
+**它不是什么**（免得一开始就想歪）：不是编辑器插件；「助手」页的聊天窗口只负责把需求整理成任务入队，不写代码、也不等执行；**不会自动把代码合进主干**，每份改动都要你亲手批准；它需要一台能跑 `claude`、`pi` 或 `codebuddy` 命令的机器，你在自己电脑上发指令、服务端在那台机器上执行。
 
 > 这文件只讲怎么用。为什么这么设计、技术契约怎么核实的，见 [`docs/architecture.md`](docs/architecture.md)；踩过的坑在 [`docs/pitfalls.md`](docs/pitfalls.md)。想按步骤走一遍、看完整功能说明，见 [`docs/tutorial.md`](docs/tutorial.md)。
 
@@ -418,7 +418,7 @@ cs schedule add demo "一次性迁移" --at "2026-12-01 02:00"
 助手：（另起一条任务）…
 ```
 
-它是个**独立进程**，代码不在本仓库（`朴素agent` 的精简 fork，只留「理解需求 → 建任务」这一条链路）：
+它是个**独立进程**（代码就在本仓库的 [`assistant/`](assistant/README.md) 目录，是 `朴素agent` 的精简 fork，只留「理解需求 → 建任务」这一条链路）：
 
 - 工具白名单只有四个：`list_projects`、`create_task`、`get_project_context`、`list_tasks`。**它不能改代码、不能跑 shell**，只能建任务；
 - 崩了不影响任务队列；重启任务队列也不会掐掉正在写的那轮对话；
@@ -428,17 +428,17 @@ cs schedule add demo "一次性迁移" --at "2026-12-01 02:00"
 
 ```bash
 # 方式一：手动起（和平台自动拉起共用同一份对话历史）
-cd D:/project/codingstorm-assistant && start-assistant.bat
+cd assistant && start-assistant.bat
 ```
 
 ```toml
-# 方式二：让平台在启动时顺手拉起来
+# 方式二：让平台在启动时顺手拉起来（dir 不用写，自动找仓库里的 assistant/）
 [assistant]
 autostart = true
-dir = "D:/project/codingstorm-assistant"
 ```
 
 Key 的优先级：`[assistant] api_key` > `[claude.env]` 的 `ANTHROPIC_AUTH_TOKEN` —— 同一个供应商的话留空就行。
+助手自己的配置模板在 `assistant/config.example.py`，本地 `assistant/config.py` 被忽略、不进版本库。
 
 <a id="context"></a>
 
@@ -497,7 +497,8 @@ python -m codingstorm.app --config codingstorm.toml
 | `codebuddy.permission_mode` | `bypassPermissions` | 该模式下额外加 `--dangerously-skip-permissions` |
 | `assistant.enabled` | `true` | 顶栏「助手」页开关 |
 | `assistant.url` | `http://127.0.0.1:8001` | 助手地址，iframe 直接嵌它 |
-| `assistant.autostart` | `false` | 主服务启动时顺手拉起助手进程（`dir` 要配好） |
+| `assistant.autostart` | `false` | 主服务启动时顺手拉起助手进程 |
+| `assistant.dir` | 自动 | 留空 = 仓库里的 `assistant/`；wheel 安装或外置时才需显式指定 |
 | `assistant.api_key` | 空 | 留空复用 `[claude.env]` 的 `ANTHROPIC_AUTH_TOKEN` |
 
 每项在 `codingstorm.example.toml` 里都有注释说明为什么这么设。启动参数还有 `--host` / `--port` 覆盖监听地址、`--no-scheduler` 只起 HTTP 不执行任务（调试用）、`--log-level`。
@@ -606,7 +607,7 @@ repos/              被调度的仓库。注册时留空 repo_path 就用这里�
 
 ```bash
 pip install -e ".[dev]"
-pytest -q          # 364 项
+pytest -q          # 365 项
 ```
 
 代码在 `codingstorm/`：`api.py`（HTTP）、`scheduler.py`（并发、执行窗口、定时触发与生命周期）、`runner.py`（拉起子进程、tail 日志、看门狗）、`agents/`（执行器：Claude Code / Pi / CodeBuddy 的命令行与事件翻译）、`workspace.py`（worktree 与合并）、`context.py`（上下文三层）、`agent_state.py`（严格模式状态机）、`timing.py`（窗口与定时规则的时间计算，纯函数）、`store.py` + `db.py`（数据层）、`cli.py`（`cs`）、`static/`（无构建步骤的前端）。

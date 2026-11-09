@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+data/
+data.jsonl
+traces.jsonl
+api_key.json
+config.py
+uploads/
+sandbox/
+*.log

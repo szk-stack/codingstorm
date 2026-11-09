@@ -37,15 +37,17 @@ def _fake_probe(monkeypatch, running: bool) -> None:
 
 # ---------------- 状态 ----------------
 
-def test_info_reports_not_running(make_app, monkeypatch):
+def test_info_reports_not_running(make_app, monkeypatch, tmp_path):
     _fake_probe(monkeypatch, False)
+    # 假装源码树里没有自带 assistant/，聚焦「没配 dir」这条路径
+    monkeypatch.setattr(AssistantSupervisor, "bundled_dir", tmp_path / "no-bundled")
     client, _ = make_app(url="http://127.0.0.1:8123")
     with client:
         payload = client.get("/api/assistant/info").json()
     assert payload["enabled"] is True
     assert payload["running"] is False
     assert payload["url"] == "http://127.0.0.1:8123"
-    # 没配 dir 时要说清楚为什么拉不起来，而不是丢一个空 message
+    # 找不到目录时要说清楚为什么拉不起来，而不是丢一个空 message
     assert "dir" in payload["message"]
     assert payload["managed"] is False
 
@@ -82,11 +84,27 @@ def test_start_refuses_when_disabled(make_app, monkeypatch):
 
 def test_start_refuses_without_dir(make_app, monkeypatch, tmp_path):
     _fake_probe(monkeypatch, False)
+    monkeypatch.setattr(AssistantSupervisor, "bundled_dir", tmp_path / "no-bundled")
     client, app = make_app(dir=None)
     with client:
         ok, message = app.state.assistant.start()
     assert ok is False
     assert "dir" in message
+
+
+def test_defaults_to_bundled_dir(make_app, monkeypatch):
+    """助手代码就在仓库里时，不配 dir 也应该自动找到它。"""
+    _fake_probe(monkeypatch, False)
+    bundled = Path(__file__).resolve().parent.parent / "assistant"
+    monkeypatch.setattr(AssistantSupervisor, "bundled_dir", bundled)
+    client, app = make_app(dir=None)
+    with client:
+        info = client.get("/api/assistant/info").json()
+    assert (bundled / "server.py").exists()
+    assert app.state.assistant._resolve_dir() == bundled
+    assert info["managed"] is True
+    # 找到了目录、只是没在跑，别再报「找不到助手目录」
+    assert "找不到助手目录" not in info["message"]
 
 
 def test_start_refuses_when_server_py_missing(make_app, monkeypatch, tmp_path):

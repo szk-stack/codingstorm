@@ -105,6 +105,11 @@
         <h2 id="queue-title">任务队列</h2>
         <span id="queue-summary" class="head-sub"></span>
         <span id="queue-count" class="muted"></span>
+        <select id="project-runtime" class="runtime-select" title="本项目新任务的执行器；只影响之后启动的任务" hidden>
+          <option value="">执行器：跟随全局</option>
+          <option value="claude">Claude Code</option>
+          <option value="pi">Pi</option>
+        </select>
       </div>
       <ul id="tasks" class="list tasks"></ul>
     </div>

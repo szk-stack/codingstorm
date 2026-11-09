@@ -150,6 +150,36 @@ async function createProject(form) {
   }
 }
 
+/**
+ * 切换当前项目的执行器。
+ *
+ * 只影响**之后启动**的任务：正在跑的那条已经拉起了子进程，排队中的那条
+ * 在领取时才读项目配置，所以下一次 tick 就会用新执行器。
+ */
+async function changeProjectRuntime(value) {
+  if (!state.projectId) return;
+  const select = $('#project-runtime');
+  select.disabled = true;
+  try {
+    const p = await api(`/api/projects/${state.projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ runtime: value || null }),
+    });
+    const idx = state.projects.findIndex((x) => x.id === p.id);
+    if (idx >= 0) state.projects[idx] = p;
+    renderProjects();
+    select.value = p.runtime || '';
+    toast(`执行器：${p.runtime || '跟随全局'}`);
+  } catch (err) {
+    toast(`切换失败：${err.message}`, true);
+    // 回滚到服务端的已知值，别让下拉框显示一个没生效的选择
+    const current = state.projects.find((x) => x.id === state.projectId);
+    select.value = current?.runtime || '';
+  } finally {
+    select.disabled = false;
+  }
+}
+
 // ---------------- 任务 ----------------
 
 async function selectProject(id) {
@@ -158,6 +188,9 @@ async function selectProject(id) {
   renderProjects();
   const project = state.projects.find((p) => p.id === id);
   $('#queue-title').textContent = project ? `${project.name} 的任务` : '任务队列';
+  const runtimeSelect = $('#project-runtime');
+  runtimeSelect.hidden = !project;
+  if (project) runtimeSelect.value = project.runtime || '';
   await loadTasks();
   await loadSchedules();
   await loadContext();
@@ -1256,6 +1289,9 @@ function init() {
   $('#project-form').addEventListener('submit', (e) => {
     e.preventDefault();
     createProject(e.target);
+  });
+  $('#project-runtime').addEventListener('change', (e) => {
+    changeProjectRuntime(e.target.value);
   });
 
   document.querySelectorAll('.tab').forEach((btn) => {

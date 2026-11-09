@@ -11,15 +11,19 @@
 <header class="topbar">
   <div class="brand">
     <h1>codingstorm</h1>
-    <span class="sub">AI 任务队列</span>
+    <span class="sub" id="brand-sub">AI 任务队列</span>
   </div>
+  <nav class="viewswitch" id="viewswitch">
+    <button class="vbtn" data-view="queue">任务队列</button>
+    <button class="vbtn" data-view="assistant">助手</button>
+  </nav>
   <div class="topbar-spacer"></div>
   <div class="topbar-right">
     <span id="conn" class="conn">待命</span>
   </div>
 </header>
 
-<main class="layout">
+<main class="layout" id="queue-view">
 
   <aside class="sidebar">
     <section class="panel">
@@ -28,13 +32,17 @@
       <details class="disclosure">
         <summary>注册项目</summary>
         <form id="project-form" class="inline-form">
-          <input name="name" placeholder="项目名" required pattern="[A-Za-z0-9._-]+">
-          <input name="repo_path" placeholder="仓库路径（留空自动新建）">
+          <input name="name" placeholder="项目名（英文/数字/._-）" title="只能用字母、数字、点、下划线、短横线；中文请用拼音" required pattern="[A-Za-z0-9._-]+">
+          <div class="path-row">
+            <input name="repo_path" placeholder="仓库路径（留空自动新建）" title="留空：平台新建空裸仓库；填写：不存在会自动建目录并 git init，已有文件会做一次初始提交">
+            <button type="button" id="pick-repo" class="ghost" title="在本机打开文件夹选择器；服务需运行在本机">浏览…</button>
+          </div>
           <input name="target_branch" placeholder="主干分支" value="main">
           <select name="runtime" title="执行器">
             <option value="">执行器：跟随全局</option>
             <option value="claude">Claude Code</option>
             <option value="pi">Pi</option>
+            <option value="codebuddy">CodeBuddy</option>
           </select>
           <button type="submit">注册</button>
         </form>
@@ -109,6 +117,7 @@
           <option value="">执行器：跟随全局</option>
           <option value="claude">Claude Code</option>
           <option value="pi">Pi</option>
+          <option value="codebuddy">CodeBuddy</option>
         </select>
       </div>
       <ul id="tasks" class="list tasks"></ul>
@@ -211,6 +220,27 @@
   </section>
 
 </main>
+
+<!-- 助手页：单独的整屏视图，和任务队列互斥切换。
+     iframe 里是独立进程（默认 8001）的聊天界面，关掉再切回来不丢对话。 -->
+<section class="assistant-view" id="assistant-view" hidden>
+  <iframe id="assistant-frame" title="AI 助手" hidden></iframe>
+
+  <div class="assistant-fallback" id="assistant-fallback" hidden>
+    <div class="assistant-card">
+      <h2>AI 助手</h2>
+      <p class="assistant-msg" id="assistant-msg">正在检测助手进程…</p>
+      <div class="row">
+        <button id="assistant-start">启动助手</button>
+        <button id="assistant-recheck" class="ghost">重新检测</button>
+      </div>
+      <p class="hint">
+        助手是独立进程。想让它随平台自动启动，在 <code>codingstorm.toml</code> 里配：
+        <code>[assistant] dir = "助手目录"</code>、<code>autostart = true</code>。
+      </p>
+    </div>
+  </div>
+</section>
 
 <script src="/static/app.js"></script>
 </body>

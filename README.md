@@ -20,9 +20,9 @@ cs diff <任务id>          # 回来看它改了什么
 cs approve <任务id>       # 满意，合进主干
 ```
 
-**它不是什么**（免得一开始就想歪）：不是编辑器插件，也不是聊天窗口；**不会自动把代码合进主干**，每份改动都要你亲手批准；它需要一台能跑 `claude`（或 `pi`）命令的机器，你在自己电脑上发指令、服务端在那台机器上执行。
+**它不是什么**（免得一开始就想歪）：不是编辑器插件，也不是聊天窗口；**不会自动把代码合进主干**，每份改动都要你亲手批准；它需要一台能跑 `claude`、`pi` 或 `codebuddy` 命令的机器，你在自己电脑上发指令、服务端在那台机器上执行。
 
-> 这文件只讲怎么用。为什么这么设计、技术契约怎么核实的，见 [`docs/architecture.md`](docs/architecture.md)；踩过的坑在 [`docs/pitfalls.md`](docs/pitfalls.md)。
+> 这文件只讲怎么用。为什么这么设计、技术契约怎么核实的，见 [`docs/architecture.md`](docs/architecture.md)；踩过的坑在 [`docs/pitfalls.md`](docs/pitfalls.md)。想按步骤走一遍、看完整功能说明，见 [`docs/tutorial.md`](docs/tutorial.md)。
 
 ---
 
@@ -34,7 +34,7 @@ cs approve <任务id>       # 满意，合进主干
 |---|---|---|
 | Python 3.11+ | `python --version` | 3.11 或更高 |
 | git | `git --version` | 有输出即可 |
-| 至少一个执行器 | `claude --version` 或 `pi --version` | 有输出，且这个账号已登录 |
+| 至少一个执行器 | `claude --version` / `pi --version` / `codebuddy --version` | 有输出，且这个账号已登录 |
 
 执行器在**跑服务端的那台机器**上，要能在 PATH 里直接找到，并且能正常调用模型——任务执行时不再有任何人工授权环节。默认用 Claude Code；想用 Pi 见[执行器](#执行器)。
 
@@ -105,24 +105,35 @@ cs discard <任务id>       # 不满意 → 丢掉，主干纹丝不动
 
 <a id="执行器"></a>
 
-## 执行器：Claude Code 或 Pi
+## 执行器：Claude Code / Pi / CodeBuddy
 
-默认是 Claude Code，行为与旧版一致。要换 Pi（[`@earendil-works/pi-coding-agent`](https://pi.dev)）：
+默认是 Claude Code，行为与旧版一致。另外两个：
+
+- **Pi**（[`@earendil-works/pi-coding-agent`](https://pi.dev)）：自己的 JSON 事件流，
+  没有权限系统，边界靠 `tool_call` 扩展；
+- **CodeBuddy**（[`codebuddy`](https://www.codebuddy.cn/docs/cli/cli-reference)）：
+  headless 模式兼容 Claude Code，`-p --output-format stream-json`、`--max-turns`、
+  `--resume`、`--settings` 都能直接用。
 
 ```toml
 [runtime]
-default = "pi"
+default = "pi"          # 或 "codebuddy"
 
 [pi]
 binary = "pi"
 # 留空 = 用 Pi 自己配置里的默认模型；无人值守建议显式写死
 # model = "deepseek/deepseek-chat"
+
+[codebuddy]
+binary = "codebuddy"
+# 留空 = 用 CodeBuddy 自己的默认模型
+# model = "gpt-5"
 ```
 
-也可以只让某个项目用 Pi：注册时在「执行器」下拉里选，或者：
+也可以只让某个项目换：注册时在「执行器」下拉里选，或者：
 
 ```bash
-cs runtime demo pi          # 已有项目切换；inherit = 跟随全局
+cs runtime demo pi          # 已有项目切换；codebuddy / claude / inherit
 ```
 
 等价于给项目发一条 `PATCH`：
@@ -132,12 +143,14 @@ curl -X PATCH http://127.0.0.1:8788/api/projects/<项目id> \
   -H 'content-type: application/json' -d '{"runtime":"pi"}'
 ```
 
-两边语义已经对齐（每个任务一个 worktree、一条分支、同一套 diff / 批准 / 多轮对话），
-但底层差异不小：Pi 没有 `--max-turns`（平台数轮数）、没有权限系统（边界靠一个
-`tool_call` 扩展调同一个 `guard.py`）、**助手回复失败时仍然退出 0**（只能看事件流判成败）。
-另外，切换执行器后，未完成任务的下一轮会开新会话（旧 CLI 的会话文件打不开），
-工作区改动会保留，但前几轮的对话上下文不在了。
-完整对照与验证情况见 [`docs/pi-agent-integration.md`](docs/pi-agent-integration.md)。
+三者语义已经对齐（每个任务一个 worktree、一条分支、同一套 diff / 批准 / 多轮对话），
+差异集中在执行器内部：Pi 没有 `--max-turns`（平台数轮数）、没有权限系统（边界靠一个
+`tool_call` 扩展调同一个 `guard.py`）、**助手回复失败时仍然退出 0**；CodeBuddy 的执行器参数与 Claude 基本一致（新会话 `--session-id`、续跑 `--resume`），
+headless 下额外需要 `--dangerously-skip-permissions`。
+切换执行器后，未完成任务的下一轮会开新会话，工作区改动保留，但前几轮对话上下文不在了。
+
+- Pi 的完整对照与验证情况：[`docs/pi-agent-integration.md`](docs/pi-agent-integration.md)
+- CodeBuddy 的接入细节与验收清单：[`docs/codebuddy-integration.md`](docs/codebuddy-integration.md)
 
 ---
 
@@ -146,30 +159,39 @@ curl -X PATCH http://127.0.0.1:8788/api/projects/<项目id> \
 | | 你要做什么 | 什么时候用 |
 |---|---|---|
 | **全新项目**（上面的第 3 步） | 只填名字，其余平台包办 | 想让 AI 从零写个项目、或先试一试 |
-| **已有项目** | 先把仓库做成裸克隆放到服务器上，注册时填路径 | 已经有一份代码要接着改 |
+| **已有项目** | 填本地目录，或点「浏览…」选目录 | 已经有一份代码要接着改 |
 
-**接入已有仓库**：
+**接入已有目录**：
+
+- 目录不存在：自动创建并 `git init`；
+- 目录存在但不是 git 仓库：原地 `git init`，已有文件做一次初始提交；
+- 已经是一个 git 仓库：直接使用，`target_branch` 必须存在。
+
+```bash
+curl -X POST http://127.0.0.1:8788/api/projects \
+  -H 'content-type: application/json' \
+  -d '{"name":"demo","repo_path":"/home/ubuntu/projects/demo"}'
+```
+
+**推荐用裸克隆**：批准时平台用 `update-ref` 推进分支引用，它不会同步任何工作区。
+裸仓库没有工作区，最干净。普通仓库也能用，但**批准后你那个目录里的工作区不会
+自动变**，`git status` 可能看起来像「文件全被改了」；需要手动 `git reset --hard`
+同步，或者一开始就用裸克隆：
 
 ```bash
 git clone --bare <你的仓库> ~/codingstorm/repos/demo.git
 ```
 
-然后注册时把路径带上：
-
-```bash
-curl -X POST http://127.0.0.1:8788/api/projects \
-  -H 'content-type: application/json' \
-  -d '{"name":"demo","repo_path":"/home/ubuntu/codingstorm/repos/demo.git"}'
-```
-
-**为什么必须是裸克隆**：批准时平台用 `update-ref` 推进分支引用，它不会同步工作区的文件。非裸仓库第一次批准后，主工作区会和 HEAD 脱节，`git status` 看起来像「所有文件都被删了」。代码会给非裸仓库打一条告警。平台还会往仓库的 `info/exclude` 写一份排除列表（`__pycache__/` 等）——它是未跟踪的本地文件，不进你的 git 历史，但能防止 AI 跑代码产生的字节码缓存被一起提交。
+平台会给非裸仓库打一条告警，并往仓库的 `info/exclude` 写一份排除列表
+（`__pycache__/` 等）——它是未跟踪的本地文件，不进 git 历史，但能防止 AI 跑代码
+产生的字节码缓存被一起提交。
 
 注册项目的全部字段：
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `name` | **必填** | 字母、数字和 `._-`，全局唯一。以后 `cs submit <这个名字>` 用它 |
-| `repo_path` | `{root}/repos/<name>.git` | 留空就用它，不存在时自动 `git init --bare` 建空仓库 |
+| `repo_path` | `{root}/repos/<name>.git` | 留空建空裸仓库；填路径则不存在自动建、非仓库自动 init、已有文件自动初始提交 |
 | `target_branch` | `main` | 仓库已有提交时，这条分支必须存在 |
 
 **从零起的项目，之后想拉到本地接着开发**：从服务器 clone，不要本地 `git init` 再 push。
@@ -202,6 +224,7 @@ git clone tencent:/home/ubuntu/codingstorm/repos/demo.git demo
 
 | 我想… | 看哪一节 |
 |---|---|
+| 第一次用，照着做一遍 | [详细教程](docs/tutorial.md) |
 | 查某个命令怎么写 | [常用命令](#常用命令) |
 | 换成 Pi 执行 / 让某个项目用 Pi | [执行器](#执行器) |
 | 看懂任务现在处于什么状态 | [任务状态](#任务状态) |
@@ -382,6 +405,41 @@ cs schedule add demo "一次性迁移" --at "2026-12-01 02:00"
 - 实时靠 WebSocket，另有 2 秒轮询兜底；窗口状态另有 30 秒轮询。**时间一律按配置的时区显示**，不用浏览器时区。
 - 没有构建步骤，也不依赖任何 CDN。
 
+<a id="assistant"></a>
+
+## 对话式助手（顶栏「助手」页）
+
+顶栏可以在**任务队列**和**助手**之间切换。助手是个聊天窗口：你用大白话说需求，它整理成结构化任务丢进队列，**丢完立刻回你「已加入队列」**，不会停在那儿等任务跑完 —— 你可以接着说下一个需求。
+
+```
+你：给贪吃蛇加个暂停键
+助手：（看项目 → 整理成 目标/范围/验收 → 建任务）已加入队列 #a1b2c3，在任务队列页能看到
+你：那顺便把速度调慢一点
+助手：（另起一条任务）…
+```
+
+它是个**独立进程**，代码不在本仓库（`朴素agent` 的精简 fork，只留「理解需求 → 建任务」这一条链路）：
+
+- 工具白名单只有四个：`list_projects`、`create_task`、`get_project_context`、`list_tasks`。**它不能改代码、不能跑 shell**，只能建任务；
+- 崩了不影响任务队列；重启任务队列也不会掐掉正在写的那轮对话；
+- 前端用 iframe 嵌它，页面上看到的就是它自己的聊天界面。**助手不在跑时，页面会显示原因和「启动助手」按钮**，不用去翻日志。
+
+启动方式二选一：
+
+```bash
+# 方式一：手动起（和平台自动拉起共用同一份对话历史）
+cd D:/project/codingstorm-assistant && start-assistant.bat
+```
+
+```toml
+# 方式二：让平台在启动时顺手拉起来
+[assistant]
+autostart = true
+dir = "D:/project/codingstorm-assistant"
+```
+
+Key 的优先级：`[assistant] api_key` > `[claude.env]` 的 `ANTHROPIC_AUTH_TOKEN` —— 同一个供应商的话留空就行。
+
 <a id="context"></a>
 
 ## 上下文：让 AI 记住项目约定
@@ -421,18 +479,26 @@ python -m codingstorm.app --config codingstorm.toml
 | `root` | `~/codingstorm` | 所有运行时数据的位置 |
 | `server.host` / `port` | `127.0.0.1` / `8788` | 默认只监听本机 |
 | `scheduler.max_concurrent` | `2` | **由内存决定** —— 每个 Claude Code 进程约 200–400MB |
-| `task.max_turns` | `50` | 不设上限的话，一个死循环 agent 能烧一整晚 |
-| `task.wall_clock_timeout_s` | `3600` | 墙钟上限，超了整组 SIGTERM→SIGKILL |
+| `task.max_turns` | `50` | 单次 attempt 的轮数上限；`0` = 不限制（CLI 不传 `--max-turns`，Pi 不计数）。不建议无上限 |
+| `task.wall_clock_timeout_s` | `3600` | 墙钟上限，超了整组 SIGTERM→SIGKILL；`0` = 不限制，`idle_timeout` 仍生效 |
 | `task.idle_timeout_s` | `300` | 多久没有任何输出就判定卡死 |
 | `context.sediment` | `true` | 任务结束后自动写变更记录（会多一次模型调用） |
 | `agents.enabled` | `false` | 严格模式总开关，默认关；见[严格模式](#严格模式phase-8a) |
 | `claude.guard_block_push` | `true` | 拦 `git push` 与改 remote |
+| `claude.env` | 空 | 直连供应商的环境变量；写进 `--settings`，优先于用户设置（可绕开 CC Switch 之类本地代理） |
 | `scheduler.window.enabled` | `false` | 只在指定时段跑任务（谷时省钱） |
 | `scheduler.misfire_grace_s` | `600` | 定时任务迟到多久还算「准时」 |
 | `runtime.default` | `claude` | 全局执行器；项目可以单独覆盖 |
 | `pi.binary` | `pi` | Pi 的可执行文件名/路径 |
 | `pi.model` | 空 | 留空用 Pi 自己的默认模型；支持 `provider/id` |
 | `pi.project_trust` | `ignore` | 不加载仓库里的 `.pi` 扩展与设置（无人值守更安全） |
+| `codebuddy.binary` | `codebuddy` | CodeBuddy CLI 的可执行文件名/路径 |
+| `codebuddy.model` | 空 | 留空用 CodeBuddy 自己的默认模型 |
+| `codebuddy.permission_mode` | `bypassPermissions` | 该模式下额外加 `--dangerously-skip-permissions` |
+| `assistant.enabled` | `true` | 顶栏「助手」页开关 |
+| `assistant.url` | `http://127.0.0.1:8001` | 助手地址，iframe 直接嵌它 |
+| `assistant.autostart` | `false` | 主服务启动时顺手拉起助手进程（`dir` 要配好） |
+| `assistant.api_key` | 空 | 留空复用 `[claude.env]` 的 `ANTHROPIC_AUTH_TOKEN` |
 
 每项在 `codingstorm.example.toml` 里都有注释说明为什么这么设。启动参数还有 `--host` / `--port` 覆盖监听地址、`--no-scheduler` 只起 HTTP 不执行任务（调试用）、`--log-level`。
 
@@ -489,8 +555,11 @@ repos/              被调度的仓库。注册时留空 repo_path 就用这里�
 |---|---|---|
 | GET | `/api/health` | 健康检查 |
 | GET / POST | `/api/projects` | 列出 / 注册项目 |
+| POST | `/api/fs/pick-directory` | 弹系统文件夹选择器（仅本机；返回 `{path}`，取消为 null） |
+| GET | `/api/assistant/info` | 助手状态（`enabled / url / running / message`） |
+| POST | `/api/assistant/start` | 拉起助手进程；已在跑就直接返回，失败带原因 |
 | GET | `/api/projects/{id}` | 项目详情 |
-| PATCH | `/api/projects/{id}` | 切换项目执行器（`{"runtime": "claude"\|"pi"\|null}`） |
+| PATCH | `/api/projects/{id}` | 切换项目执行器（`{"runtime": "claude"\|"pi"\|"codebuddy"\|null}`） |
 | GET / POST | `/api/projects/{id}/tasks` | 列出 / 提交任务 |
 | GET | `/api/tasks` | 列出任务（`?project_id=&status=`） |
 | GET | `/api/tasks/{id}` | 任务详情 |
@@ -537,10 +606,10 @@ repos/              被调度的仓库。注册时留空 repo_path 就用这里�
 
 ```bash
 pip install -e ".[dev]"
-pytest -q          # 324 项
+pytest -q          # 364 项
 ```
 
-代码在 `codingstorm/`：`api.py`（HTTP）、`scheduler.py`（并发、执行窗口、定时触发与生命周期）、`runner.py`（拉起子进程、tail 日志、看门狗）、`agents/`（执行器：Claude Code / Pi 的命令行与事件翻译）、`workspace.py`（worktree 与合并）、`context.py`（上下文三层）、`agent_state.py`（严格模式状态机）、`timing.py`（窗口与定时规则的时间计算，纯函数）、`store.py` + `db.py`（数据层）、`cli.py`（`cs`）、`static/`（无构建步骤的前端）。
+代码在 `codingstorm/`：`api.py`（HTTP）、`scheduler.py`（并发、执行窗口、定时触发与生命周期）、`runner.py`（拉起子进程、tail 日志、看门狗）、`agents/`（执行器：Claude Code / Pi / CodeBuddy 的命令行与事件翻译）、`workspace.py`（worktree 与合并）、`context.py`（上下文三层）、`agent_state.py`（严格模式状态机）、`timing.py`（窗口与定时规则的时间计算，纯函数）、`store.py` + `db.py`（数据层）、`cli.py`（`cs`）、`static/`（无构建步骤的前端）。
 
 改架构前先读 `docs/architecture.md`，那里记录了已核实的技术契约和压测出来的实现约束 —— 不少看起来能简化的地方，简了就会踩坑（该文档第 5 节整节都是）。踩过的坑另见 [`docs/pitfalls.md`](docs/pitfalls.md)。
 
@@ -549,6 +618,8 @@ pytest -q          # 324 项
 - **默认只监听本机。** 要远程访问请自己加反向代理。
 - **执行机内存决定并发上限。** 每个 Claude Code 进程约 200–400MB，超了会 OOM。Pi 是 Node 进程，占用不同，并发仍要保守估。
 - **Pi 没有权限系统，也没有 `--max-turns`。** 边界靠平台生成的 `tool_call` 扩展调同一个 `guard.py`；轮数由平台数 `turn_end`、在下一轮开始前拦下。详见 [`docs/pi-agent-integration.md`](docs/pi-agent-integration.md)。
+- **`max_turns = 0` / `wall_clock_timeout_s = 0` 会关掉成本护栏。** 只保留 5 分钟无输出的 idle 超时；一个持续输出的死循环 agent 可以跑到你手动点「停止」为止。不建议在生产机器上长期这么开。
+- **CodeBuddy 的事件流按 Claude Code 兼容格式解析。** 如果某个版本改了 `usage` 字段名，token 可能记成 0；`result` 成败和文本不受影响。真机验收清单见 [`docs/codebuddy-integration.md`](docs/codebuddy-integration.md)。
 - **任务粒度太细不划算。** Claude Code 的固定开销很高（实测一句「OK」约 2.6 万 input token），一句话塞多个需求也不会更快 —— 一个任务一次执行。
 - **任务之间看不到彼此未合并的改动**，这是设计的一部分，不是 bug。周期性的定时任务尤其容易踩：人不审，第二天那条仍然基于旧主干 —— 界面上会标出来提醒。
 - **执行窗口的「临时关闭」不持久。** 重启就恢复限制。这是刻意的失败方向：宁愿你重新关一次，也不愿忘了恢复之后一直按全价烧钱。

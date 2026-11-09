@@ -34,3 +34,14 @@ scripts/spike/out/
 
 # WorkBuddy 项目数据（本地记忆与工作日志，不进公开仓库）
 .workbuddy/
+
+# 本机私有配置：codingstorm.toml 里有明文 API Key，绝不入库。
+# 用精确路径，别误伤 codingstorm.example.toml / prices.example.toml / pyproject.toml。
+/codingstorm.toml
+/prices.toml
+.env
+.env.*
+api_key.json
+
+# 本地测试产物：testcode/code1 自带一份嵌套 .git，add 进来会变成 gitlink
+/testcode/

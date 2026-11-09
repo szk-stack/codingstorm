@@ -11,6 +11,9 @@ Web UI、成本记账、多轮会话都不用知道底下换了谁。
 from __future__ import annotations
 
 import json
+import os
+import re
+import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +23,62 @@ from codingstorm.config import Config
 
 # 单条 payload 的落库上限，超出只留预览
 MAX_PAYLOAD_BYTES = 8 * 1024
+
+
+def resolve_executable(binary: str, *, windows: bool | None = None) -> str:
+    """把 npm 的 Windows 垫片解析成真正可执行的 `.exe`。
+
+    npm 全局安装会同时生成 `claude`（POSIX sh 脚本）、`claude.cmd`、`claude.ps1`。
+    Python 的 `create_subprocess_exec` 在 Windows 上：
+
+    - 不能执行无扩展名的 sh 脚本 → `[WinError 2] 系统找不到指定的文件`
+    - 能执行 `.cmd`，但要经过 `cmd.exe`，而 cmd.exe 的命令行上限只有 8191 字符，
+      prompt 一长（项目约定 + 变更记录）就会被截断/报错
+
+    Claude Code 的 `.cmd` 里指向包内的 `bin\\claude.exe`，解析出来直接启动即可。
+    解析失败就退回 `.cmd`（短 prompt 仍能跑），至少不会因为路径形态直接失败。
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return binary
+
+    path = Path(binary)
+    if not path.is_file():
+        found = shutil.which(binary)
+        if not found:
+            return binary
+        path = Path(found)
+
+    if path.suffix.lower() in (".exe", ".com"):
+        return str(path)
+
+    if path.suffix.lower() in (".cmd", ".bat"):
+        target = _exe_from_cmd(path)
+        return str(target) if target is not None else str(path)
+
+    # 无扩展名的 npm sh 脚本：同目录有 .cmd 就走它（再尝试解析 .exe）
+    sibling = path.with_suffix(".cmd")
+    if sibling.is_file():
+        return resolve_executable(str(sibling), windows=True)
+    return str(path)
+
+
+def _exe_from_cmd(path: Path) -> Path | None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+
+    # npm 垫片里是 "%dp0%\node_modules\...\claude.exe"
+    text = text.replace("%~dp0", str(path.parent) + os.sep)
+    text = text.replace("%dp0%", str(path.parent))
+    for match in re.finditer(r'"([^"]+\.exe)"', text, re.IGNORECASE):
+        candidate = Path(match.group(1))
+        if candidate.is_file():
+            return candidate
+    return None
+
 
 
 @dataclass

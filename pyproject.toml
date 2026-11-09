@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "codingstorm"
 version = "0.1.0"
-description = "按项目隔离的 AI 编码任务队列（Claude Code / Pi）：把「同步等待」变成「异步投递 + 事后审批」"
+description = "按项目隔离的 AI 编码任务队列（Claude Code / Pi / CodeBuddy）：把「同步等待」变成「异步投递 + 事后审批」"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",

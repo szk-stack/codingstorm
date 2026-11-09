@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Literal
 
@@ -43,19 +44,27 @@ ACTIONABLE_STATUSES = frozenset(
 
 
 class ProjectCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    name: str = Field(min_length=1, max_length=64)
     # 留空则用 {root}/repos/<name>.git；不存在就建一个空裸仓库
     repo_path: str = ""
     target_branch: str = "main"
     # 执行器。null / 空串 = 跟随全局 [runtime].default。
     # 绑定在项目上而不是任务上：一个项目的代码风格和约束是固定的，执行器不该每条任务换。
-    runtime: Literal["claude", "pi"] | None = None
+    runtime: Literal["claude", "pi", "codebuddy"] | None = None
 
     @field_validator("runtime", mode="before")
     @classmethod
     def _blank_runtime_is_inherit(cls, value: object) -> object:
         # 表单里「跟随全局」提交的是空串，别让它变成 422
         return value or None
+
+    @field_validator("name")
+    @classmethod
+    def _name_charset(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", value):
+            raise ValueError("项目名只能用字母、数字、点、下划线、短横线；中文请用拼音")
+        return value
+        return value
 
 
 class ScheduleRuleIn(BaseModel):
@@ -148,7 +157,7 @@ class ContextOut(BaseModel):
 class ProjectRuntimeIn(BaseModel):
     """切换项目执行器。null = 跟随全局默认。"""
 
-    runtime: Literal["claude", "pi"] | None = None
+    runtime: Literal["claude", "pi", "codebuddy"] | None = None
 
     @field_validator("runtime", mode="before")
     @classmethod

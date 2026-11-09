@@ -136,7 +136,8 @@ Phase 1–8 假设底下永远是 Claude Code。接入 Pi 时把「进程管理�
 - `scheduler` 按项目选执行器（`projects.runtime` → 全局 `[runtime].default`）。
 
 于是 Web UI、成本记账、多轮会话、diff / approve 全部不用知道底下换了谁。
-两个执行器的差异与验收清单见 `pi-agent-integration.md`。
+目前有 claude / pi / codebuddy 三个执行器；后两个的差异与验收清单见
+`pi-agent-integration.md` 和 `codebuddy-integration.md`。
 
 ### 4.2 目录结构
 
@@ -150,7 +151,7 @@ codingstorm/
     timing.py      执行窗口与定时规则的时间计算（纯函数，不碰 DB）
     git_ops.py     worktree / rebase / update-ref / diff / 对账
     runner.py      子进程管理 + 日志 tail + 看门狗（不含事件解释）
-    agents/        执行器：claude / pi 的命令行与事件翻译
+    agents/        执行器：claude / pi / codebuddy 的命令行与事件翻译
     scheduler.py   每项目串行队列 + 全局并发上限 + 执行窗口 + 定时触发 + 看门狗
     context.py     三层上下文组装与沉淀
     api.py         FastAPI 路由 + WebSocket

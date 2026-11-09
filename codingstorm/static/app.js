@@ -25,6 +25,7 @@ const state = {
   seen: new Set(),   // 已渲染的事件 seq，用于去重（历史与实时可能重叠）
   expanded: new Set(),
   progressAt: 0,
+  lastAssistantText: '',
 };
 
 // ---------------- 工具 ----------------
@@ -44,6 +45,26 @@ function toast(msg, isErr) {
   toastTimer = setTimeout(() => box.classList.remove('show'), 4000);
 }
 
+/** FastAPI 的 422 detail 是数组；直接塞进 Error 会变成 [object Object]。 */
+function detailMessage(detail) {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item) => {
+      if (typeof item === 'string') return item;
+      if (!item || typeof item !== 'object') return String(item);
+      const loc = Array.isArray(item.loc)
+        ? item.loc.filter((x) => !['body', 'query', 'path'].includes(x)).join('.')
+        : '';
+      const msg = item.msg || item.message || JSON.stringify(item);
+      return loc ? `${loc}：${msg}` : msg;
+    }).join('；');
+  }
+  if (detail && typeof detail === 'object') {
+    return detail.message || detail.msg || JSON.stringify(detail);
+  }
+  return String(detail);
+}
+
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     headers: { 'content-type': 'application/json' },
@@ -53,7 +74,7 @@ async function api(path, opts = {}) {
     let msg = `${res.status} ${res.statusText}`;
     try {
       const body = await res.json();
-      if (body && body.detail) msg = body.detail;
+      if (body && body.detail) msg = detailMessage(body.detail);
     } catch (_) { /* 非 JSON 响应，用默认消息 */ }
     throw new Error(msg);
   }
@@ -137,6 +158,15 @@ function renderProjects() {
 
 async function createProject(form) {
   const data = Object.fromEntries(new FormData(form));
+  data.name = (data.name || '').trim();
+  // 后端只接受 ASCII 项目名（会用于 repos/worktrees/contexts 的目录名）。
+  // 这里先拦一次，别把浏览器校验漏掉的情况拖到 422。
+  if (!/^[A-Za-z0-9._-]+$/.test(data.name)) {
+    toast('项目名只能用字母、数字、点、下划线、短横线；中文请用拼音', true);
+    form.elements.name?.focus();
+    return;
+  }
+  data.target_branch = (data.target_branch || 'main').trim() || 'main';
   // 「跟随全局」提交的是空串，交给服务端当 null 处理也没问题，但别把空字段塞进请求
   if (!data.runtime) delete data.runtime;
   try {
@@ -147,6 +177,26 @@ async function createProject(form) {
     toast(`项目 ${p.name} 已注册`);
   } catch (err) {
     toast(`注册失败：${err.message}`, true);
+  }
+}
+
+async function pickRepoDirectory() {
+  const btn = $('#pick-repo');
+  const input = $('#project-form [name="repo_path"]');
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '选择中…';
+  try {
+    const r = await api('/api/fs/pick-directory', { method: 'POST' });
+    if (r && r.path) {
+      input.value = r.path;
+      input.focus();
+    }
+  } catch (err) {
+    toast(`打开文件夹失败：${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
   }
 }
 
@@ -565,6 +615,7 @@ async function openTask(id, tab = 'chat') {
   state.seen.clear();
   state.expanded.clear();
   state.progressAt = 0;
+  state.lastAssistantText = '';
 
   $('#stream').replaceChildren();
   $('#diff-body').replaceChildren();
@@ -591,7 +642,26 @@ async function openTask(id, tab = 'chat') {
   refreshFilesIfVisible();
   switchTab(tab);
   writeHash(id, tab);
+  // 先用 HTTP 补历史，再连 WebSocket。只靠 WS 的话，深链/刷新时
+  // 要等连接建立才有内容，「执行过程」会先空一下。
+  await loadEvents(id);
   connectWs(id);
+}
+
+async function loadEvents(id) {
+  let events = [];
+  try {
+    events = await api(`/api/tasks/${id}/events?limit=2000`);
+  } catch (_) {
+    return;
+  }
+  for (const e of events) {
+    if (e.seq !== undefined) {
+      if (state.seen.has(e.seq)) continue;
+      state.seen.add(e.seq);
+    }
+    renderEvent(e);
+  }
 }
 
 function renderDetail() {
@@ -637,6 +707,8 @@ function renderActions() {
   } else if (['failed', 'interrupted', 'cancelled'].includes(t.status)) {
     box.append(el('button', { onclick: () => doRequeue() }, '重新入队'));
     box.append(el('button', { class: 'danger', onclick: () => doDiscard() }, '丢弃'));
+  } else if (t.status === 'running') {
+    box.append(el('button', { class: 'danger', onclick: () => doCancel() }, '停止'));
   } else if (t.status === 'queued') {
     box.append(el('button', { class: 'ghost', onclick: () => doCancel() }, '取消'));
   } else if (t.status === 'merged' || t.status === 'discarded') {
@@ -684,10 +756,12 @@ async function doRequeue() {
 
 async function doCancel() {
   try {
-    state.task = await api(`/api/tasks/${state.task.id}/cancel`, { method: 'POST' });
+    const t = await api(`/api/tasks/${state.task.id}/cancel`, { method: 'POST' });
+    state.task = t;
     renderDetail();
     await loadTasks();
-    toast('已取消');
+    await loadChat();
+    toast(t.status === 'interrupted' ? '已停止' : '已取消');
   } catch (err) {
     toast(`取消失败：${err.message}`, true);
   }
@@ -1074,6 +1148,127 @@ async function loadChat() {
   renderChat(t, messages, events);
 }
 
+/** 极简 Markdown → 安全 HTML。只用于 AI 回复，先转义再做有限替换。
+ *
+ * 没有构建步骤，也不引 CDN，所以只覆盖模型最常输出的几种语法：
+ * 标题、段落、有序/无序列表、粗体、行内代码、围栏代码块、引用、http(s) 链接。
+ * 其余一律按文本处理 —— 宁可少渲染，不把模型输出当 HTML 解析。
+ */
+function renderMarkdown(text) {
+  const escape = (s) => s.replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[c]);
+
+  const inline = (s) => {
+    const codes = [];
+    let out = escape(s).replace(/`([^`]+)`/g, (_, code) => {
+      codes.push(code);
+      return `\u0000${codes.length - 1}\u0000`;
+    });
+    out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    out = out.replace(
+      /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener">$1</a>',
+    );
+    out = out.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[Number(i)]}</code>`);
+    return out;
+  };
+
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let para = [];
+  let list = null;
+
+  const flushPara = () => {
+    if (para.length) { out.push(`<p>${para.join('<br>')}</p>`); para = []; }
+  };
+  const flushList = () => {
+    if (list) { out.push(`</${list}>`); list = null; }
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // 围栏代码块：里面所有内容都只转义，不再做行内替换
+    if (/^\s*```/.test(line)) {
+      flushPara(); flushList();
+      const code = [];
+      for (i++; i < lines.length && !/^\s*```\s*$/.test(lines[i]); i++) {
+        code.push(lines[i]);
+      }
+      out.push(`<pre><code>${escape(code.join('\n'))}</code></pre>`);
+      continue;
+    }
+
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+
+    // Markdown 表格：表头行 + 分隔行（| --- | --- |），后面连续的行都是表体
+    const isTableRow = (s) => /^\s*\|.*\|\s*$/.test(s);
+    const isTableSep = (s) => /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(s);
+    if (isTableRow(line) && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      flushPara(); flushList();
+      const cells = (s) => s.trim().replace(/^\|/, '').replace(/\|$/, '')
+        .split('|').map((c) => c.trim());
+      const head = cells(line);
+      const body = [];
+      i++; // 跳过分隔行
+      for (i++; i < lines.length && isTableRow(lines[i]); i++) {
+        body.push(cells(lines[i]));
+      }
+      i--; // 抵消 for 的 i++
+      out.push(
+        '<table><thead><tr>' + head.map((c) => `<th>${inline(c)}</th>`).join('') + '</tr></thead><tbody>'
+        + body.map((row) => '<tr>' + row.map((c) => `<td>${inline(c)}</td>`).join('') + '</tr>').join('')
+        + '</tbody></table>',
+      );
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,4})\s+(.*)$/);
+    if (heading) {
+      flushPara(); flushList();
+      const level = Math.min(heading[1].length + 2, 6);
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const quote = line.match(/^>\s?(.*)$/);
+    if (quote) {
+      flushPara(); flushList();
+      out.push(`<blockquote>${inline(quote[1])}</blockquote>`);
+      continue;
+    }
+
+    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (ul) {
+      flushPara();
+      if (list !== 'ul') { flushList(); out.push('<ul>'); list = 'ul'; }
+      out.push(`<li>${inline(ul[1])}</li>`);
+      continue;
+    }
+
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ol) {
+      flushPara();
+      if (list !== 'ol') { flushList(); out.push('<ol>'); list = 'ol'; }
+      out.push(`<li>${inline(ol[1])}</li>`);
+      continue;
+    }
+
+    flushList();
+    para.push(inline(line));
+  }
+
+  flushPara(); flushList();
+  return out.join('');
+}
+
+const RESULT_FAIL_LABEL = {
+  error_max_turns: '达到轮数上限，任务未完成。点「继续」可以接着跑',
+  error_max_tokens: '模型输出达到上限，任务未完成',
+  error_during_execution: '执行中断，具体原因见上方错误信息',
+};
+
 function renderChat(t, messages, events) {
   const box = $('#chat');
   box.replaceChildren();
@@ -1093,11 +1288,12 @@ function renderChat(t, messages, events) {
     const r = replies[i];
     if (!r) return;
     const failed = r.is_error || (r.subtype && r.subtype !== 'success');
-    const text = r.result
-      || (failed ? `（这一轮没跑成：${r.subtype || '执行失败'}）` : '（没有文字输出）');
+    const failText = RESULT_FAIL_LABEL[r.subtype]
+      || `这一轮没跑成：${r.subtype || '执行失败'}`;
+    const text = r.result || (failed ? `（${failText}）` : '（没有文字输出）');
     box.append(el('div', { class: `chat-turn ai${failed ? ' failed' : ''}` },
       el('div', { class: 'chat-role', text: 'AI' }),
-      el('div', { class: 'chat-text', text })));
+      el('div', { class: 'chat-text', html: renderMarkdown(text) })));
   });
 
   renderChatForm(t);
@@ -1258,7 +1454,10 @@ function renderEvent(msg) {
 
   if (type === 'assistant') {
     const wrap = el('div', { class: 'ev' });
-    if (p.text) wrap.append(el('div', { class: 'ev-text', text: p.text }));
+    if (p.text) {
+      state.lastAssistantText = p.text;
+      wrap.append(el('div', { class: 'ev-text', html: renderMarkdown(p.text) }));
+    }
     for (const tu of p.tool_uses || []) wrap.append(toolCard(tu.name, tu.input));
     if (wrap.childElementCount) stream.append(wrap);
     return;
@@ -1274,12 +1473,108 @@ function renderEvent(msg) {
     const usage = p.usage || {};
     const cls = p.is_error ? 'ev ev-text ev-error' : 'ev ev-result';
     const wrap = el('div', { class: cls });
-    if (p.result) wrap.append(el('div', { text: p.result }));
+    // CodeBuddy / Claude 的 result 通常就是最后一条 assistant 文本；
+    // 再渲染一遍会让执行过程里出现两份一模一样的长回复。
+    if (p.result && p.result !== state.lastAssistantText) {
+      wrap.append(el('div', { html: renderMarkdown(p.result) }));
+    }
     wrap.append(el('div', { class: 'muted', text:
       `turns=${p.num_turns ?? '?'} · in=${usage.input_tokens ?? 0} ` +
       `out=${usage.output_tokens ?? 0} · cache_read=${usage.cache_read_input_tokens ?? 0}` }));
     stream.append(wrap);
     return;
+  }
+}
+
+// ---------------- 助手页 ----------------
+
+/**
+ * 「助手 / 任务队列」是两套互斥的整屏视图，靠 hash 区分：
+ *   #/assistant  → 助手（iframe 指向独立进程）
+ *   其余         → 任务队列（原有路由 #/task/<id> 不变）
+ *
+ * iframe 只在第一次进入助手页时设 src，之后切走只是隐藏 —— 重新设 src 会把
+ * 正在写的那轮需求清空，那是浏览器行为，不是我们能拦的。
+ */
+const assistant = { loaded: false, url: '' };
+
+function currentView() {
+  return /^#\/assistant(\/|$)/.test(location.hash || '') ? 'assistant' : 'queue';
+}
+
+function applyView() {
+  const view = currentView();
+  const isAssistant = view === 'assistant';
+  $('#queue-view').hidden = isAssistant;
+  $('#assistant-view').hidden = !isAssistant;
+  document.querySelectorAll('.vbtn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.view === view);
+  });
+  $('#brand-sub').textContent = isAssistant ? '对话式需求助手' : 'AI 任务队列';
+  if (isAssistant) {
+    loadAssistant();
+  } else if (!state.projectId && state.projects.length) {
+    // 直接以 #/assistant 进站时初始化跳过了选项目；切回队列要补上，
+    // 否则会看到一个空队列，得手动点一下项目才有内容
+    selectProject(state.projects[0].id);
+  }
+  return view;
+}
+
+function gotoView(view) {
+  const next = view === 'assistant' ? '#/assistant' : '#/';
+  if (location.hash === next) {
+    applyView();
+    return;
+  }
+  location.hash = next;
+}
+
+async function loadAssistant(force = false) {
+  if (assistant.loaded && !force) return;
+  const frame = $('#assistant-frame');
+  const fallback = $('#assistant-fallback');
+  let info;
+  try {
+    info = await api('/api/assistant/info');
+  } catch (err) {
+    frame.hidden = true;
+    fallback.hidden = false;
+    $('#assistant-msg').textContent = `取不到助手状态：${err.message}`;
+    $('#assistant-start').hidden = true;
+    return;
+  }
+  assistant.loaded = true;
+  assistant.url = info.url || '';
+  if (info.running) {
+    fallback.hidden = true;
+    frame.hidden = false;
+    const src = `${info.url}/`;
+    if (frame.getAttribute('src') !== src) frame.setAttribute('src', src);
+    return;
+  }
+  frame.hidden = true;
+  fallback.hidden = false;
+  $('#assistant-msg').textContent = info.message || '助手没有在运行';
+  // 配置里关掉了助手就没必要给「启动」按钮，指回配置更直接
+  $('#assistant-start').hidden = !info.enabled;
+}
+
+async function startAssistant(btn) {
+  const text = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '启动中…';
+  $('#assistant-msg').textContent = '正在拉起助手进程，最多等 20 秒…';
+  try {
+    const info = await api('/api/assistant/start', { method: 'POST' });
+    assistant.loaded = false;
+    await loadAssistant(true);
+    if (!info.running) $('#assistant-msg').textContent = info.message || '启动失败';
+  } catch (err) {
+    $('#assistant-msg').textContent = `启动失败：${err.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = text;
   }
 }
 
@@ -1290,6 +1585,7 @@ function init() {
     e.preventDefault();
     createProject(e.target);
   });
+  $('#pick-repo').addEventListener('click', pickRepoDirectory);
   $('#project-runtime').addEventListener('change', (e) => {
     changeProjectRuntime(e.target.value);
   });
@@ -1302,6 +1598,8 @@ function init() {
   });
 
   window.addEventListener('hashchange', () => {
+    // 先定视图：助手页不参与任务路由，深链 #/task/... 一律回到队列
+    if (applyView() !== 'queue') return;
     const route = parseHash();
     if (route && (!state.task || state.task.id !== route.taskId)) {
       openTask(route.taskId, route.tab);
@@ -1309,6 +1607,13 @@ function init() {
       switchTab(route.tab);
     }
   });
+
+  // ---- 助手 / 队列 切换 ----
+  document.querySelectorAll('.vbtn').forEach((btn) => {
+    btn.addEventListener('click', () => gotoView(btn.dataset.view));
+  });
+  $('#assistant-start').addEventListener('click', (e) => startAssistant(e.currentTarget));
+  $('#assistant-recheck').addEventListener('click', () => loadAssistant(true));
 
   // ---- 上下文面板 ----
   document.querySelectorAll('.ctab').forEach((btn) => {
@@ -1393,7 +1698,10 @@ function init() {
   $('#tasks').after(form);
 
   // 窗口状态要先拿到 —— 任务列表要靠它标出「等窗口」的那些
+  applyView();
   loadWindow().catch(() => {}).then(() => loadProjects()).then(() => {
+    // 直接打开 #/assistant 时不用再挑任务，队列在后台照常加载
+    if (currentView() === 'assistant') return;
     const route = parseHash();
     if (route) {
       openTask(route.taskId, route.tab);

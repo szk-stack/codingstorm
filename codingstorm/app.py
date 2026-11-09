@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from codingstorm.api import STATIC_DIR, pages, router
+from codingstorm.assistant import AssistantSupervisor
 from codingstorm.config import Config
 from codingstorm.context import ContextStore
 from codingstorm.db import Database
@@ -30,6 +31,13 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         config.ensure_dirs()
+        if config.task.max_turns == 0 or config.task.wall_clock_timeout_s == 0:
+            log.warning(
+                "任务限制已关闭：max_turns=%s, wall_clock_timeout_s=%s；"
+                "单任务可能无限运行，注意成本，必要时手动停止",
+                config.task.max_turns,
+                config.task.wall_clock_timeout_s,
+            )
 
         # 装配边界拦截钩子。Claude Code 走 `--settings`（**合并**进用户配置，
         # 所以凭证等设置不受影响）；Pi 走 `-e pi-guard.ts`，共用同一份规则。
@@ -38,6 +46,9 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
         if guard_settings is not None:
             config.claude.settings_file = guard_settings
         installer.install_pi_guard()
+        codebuddy_settings = installer.install_codebuddy_guard()
+        if codebuddy_settings is not None:
+            config.codebuddy.settings_file = codebuddy_settings
 
         prices = PriceTable.load(
             config.pricing.prices_file or (config.root / "prices.toml")
@@ -59,6 +70,7 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
         workspaces = WorkspaceManager(config)
         contexts = ContextStore(config)
         scheduler = Scheduler(config, store, runner, workspaces, contexts, prices)
+        assistant = AssistantSupervisor(config)
 
         app.state.config = config
         app.state.db = db
@@ -69,10 +81,14 @@ def create_app(config: Config, *, start_scheduler: bool = True) -> FastAPI:
         app.state.contexts = contexts
         app.state.prices = prices
         app.state.scheduler = scheduler
+        app.state.assistant = assistant
 
         if start_scheduler:
             # 里面会先做崩溃对账：杀掉遗留的孤儿进程、把中断任务标出来
             await scheduler.start()
+        # 助手是独立进程，拉不起来不该挡住任务队列 —— 失败只记一条日志，
+        # 前端会拿到 message 显示「启动助手」按钮
+        await assistant.ensure_started()
         log.info("codingstorm 已启动，数据目录 %s", config.root)
         try:
             yield

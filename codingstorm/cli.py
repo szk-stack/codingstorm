@@ -518,8 +518,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "runtime",
         nargs="?",
-        choices=["claude", "pi", "inherit"],
-        help="claude / pi；inherit = 跟随全局默认。不填只看当前值",
+        choices=["claude", "pi", "codebuddy", "inherit"],
+        help="claude / pi / codebuddy；inherit = 跟随全局默认。不填只看当前值",
     )
     s.set_defaults(func=cmd_runtime)
 

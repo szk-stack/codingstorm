@@ -8,7 +8,7 @@ import pytest
 
 from codingstorm.config import Config
 from codingstorm.git_ops import Git
-from codingstorm.workspace import RebaseConflict, RepoError, WorkspaceManager
+from codingstorm.workspace import RebaseConflict, RepoError, WorkspaceManager, prepare_repo, prepare_repo
 
 
 def run(coro):
@@ -523,5 +523,149 @@ def test_diff_is_truncated_when_huge(env):
         g = Git(ws.path)
         d = await g.diff(ws.base_commit, f"refs/heads/{ws.branch}", max_bytes=10_000)
         assert "已截断" in d
+
+    run(main())
+
+
+# ---------- 注册时的仓库自动初始化 ----------
+
+def test_prepare_auto_creates_missing_path(tmp_path):
+    cfg = Config(root=tmp_path / "root")
+    path = tmp_path / "new" / "repo"
+
+    async def main():
+        got = await prepare_repo(
+            cfg, name="p", repo_path=str(path), target_branch="main"
+        )
+        assert got == path.resolve()
+        assert (path / ".git").exists()
+
+    run(main())
+
+
+def test_prepare_auto_inits_plain_folder_and_imports_files(tmp_path):
+    cfg = Config(root=tmp_path / "root")
+    folder = tmp_path / "plain"
+    folder.mkdir()
+    _write(folder, "hello.txt", "hi")
+
+    async def main():
+        got = await prepare_repo(
+            cfg, name="p", repo_path=str(folder), target_branch="main"
+        )
+        assert got == folder.resolve()
+        assert (folder / ".git").exists()
+        assert git(["rev-parse", "--verify", "main"], folder)
+        assert git(["show", "main:hello.txt"], folder) == "hi"
+        assert "导入现有文件" in git(["log", "-1", "--format=%s"], folder)
+
+    run(main())
+
+
+def test_prepare_inits_inside_parent_repo(tmp_path):
+    """像 testcode 这种「在另一个仓库里的普通子目录」，应该在原地建自己的仓库。"""
+    cfg = Config(root=tmp_path / "root")
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    git(["init", "-q", "-b", "main"], parent)
+    _write(parent, "root.txt", "root")
+    git(["add", "."], parent)
+    git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], parent)
+
+    child = parent / "child"
+    child.mkdir()
+    _write(child, "hello.txt", "hi")
+
+    async def main():
+        got = await prepare_repo(
+            cfg, name="p", repo_path=str(child), target_branch="main"
+        )
+        assert got == child.resolve()
+        assert (child / ".git").exists()
+        assert Path(git(["rev-parse", "--show-toplevel"], child)).resolve() == child.resolve()
+
+    run(main())
+
+
+def test_prepare_rejects_file_path(tmp_path):
+    cfg = Config(root=tmp_path / "root")
+    file = tmp_path / "a.txt"
+    file.write_text("x", encoding="utf-8")
+
+    async def main():
+        with pytest.raises(RepoError, match="不是文件夹"):
+            await prepare_repo(cfg, name="p", repo_path=str(file), target_branch="main")
+
+    run(main())
+
+
+# ---------- 注册时的仓库自动初始化 ----------
+
+def test_prepare_auto_creates_missing_path(tmp_path):
+    cfg = Config(root=tmp_path / "root")
+    path = tmp_path / "new" / "repo"
+
+    async def main():
+        got = await prepare_repo(
+            cfg, name="p", repo_path=str(path), target_branch="main"
+        )
+        assert got == path.resolve()
+        assert (path / ".git").exists()
+
+    run(main())
+
+
+def test_prepare_auto_inits_plain_folder_and_imports_files(tmp_path):
+    cfg = Config(root=tmp_path / "root")
+    folder = tmp_path / "plain"
+    folder.mkdir()
+    _write(folder, "hello.txt", "hi")
+
+    async def main():
+        got = await prepare_repo(
+            cfg, name="p", repo_path=str(folder), target_branch="main"
+        )
+        assert got == folder.resolve()
+        assert (folder / ".git").exists()
+        assert git(["rev-parse", "--verify", "main"], folder)
+        assert git(["show", "main:hello.txt"], folder) == "hi"
+        assert "导入现有文件" in git(["log", "-1", "--format=%s"], folder)
+
+    run(main())
+
+
+def test_prepare_inits_inside_parent_repo(tmp_path):
+    """像 testcode 这种「在另一个仓库里的普通子目录」，应该在原地建自己的仓库。"""
+    cfg = Config(root=tmp_path / "root")
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    git(["init", "-q", "-b", "main"], parent)
+    _write(parent, "root.txt", "root")
+    git(["add", "."], parent)
+    git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], parent)
+
+    child = parent / "child"
+    child.mkdir()
+    _write(child, "hello.txt", "hi")
+
+    async def main():
+        got = await prepare_repo(
+            cfg, name="p", repo_path=str(child), target_branch="main"
+        )
+        assert got == child.resolve()
+        assert (child / ".git").exists()
+        assert Path(git(["rev-parse", "--show-toplevel"], child)).resolve() == child.resolve()
+
+    run(main())
+
+
+def test_prepare_rejects_file_path(tmp_path):
+    cfg = Config(root=tmp_path / "root")
+    file = tmp_path / "a.txt"
+    file.write_text("x", encoding="utf-8")
+
+    async def main():
+        with pytest.raises(RepoError, match="不是文件夹"):
+            await prepare_repo(cfg, name="p", repo_path=str(file), target_branch="main")
 
     run(main())

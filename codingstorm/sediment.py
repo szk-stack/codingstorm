@@ -146,7 +146,14 @@ def _parse_claude(
             result.cache_creation_tokens = usage.get("cache_creation_input_tokens") or 0
             result.duration_ms = event.get("duration_ms") or duration_ms
             if event.get("is_error"):
-                result.error = str(event.get("result") or event.get("subtype"))
+                # CodeBuddy 把错误放在 errors[]，Claude 通常放在 result
+                errors = event.get("errors") or []
+                detail = (
+                    event.get("result")
+                    or "; ".join(str(e) for e in errors)
+                    or event.get("subtype")
+                )
+                result.error = str(detail)
             else:
                 result.text = (event.get("result") or "").strip() or None
         elif event.get("type") == "system" and event.get("subtype") == "init":

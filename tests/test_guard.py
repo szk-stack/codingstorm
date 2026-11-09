@@ -55,6 +55,35 @@ def test_install_disabled_returns_none(tmp_path: Path):
     assert GuardInstaller(cfg).install() is None
 
 
+def test_install_env_only_without_guard(tmp_path: Path):
+    """只配 [claude.env]、不开边界拦截时，也要生成 --settings 文件。"""
+    cfg = Config(root=tmp_path / "root")
+    cfg.ensure_dirs()
+    cfg.claude = ClaudeConfig(
+        guard_enabled=False,
+        env={"ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic"},
+    )
+    path = GuardInstaller(cfg).install()
+    assert path is not None
+    settings = json.loads(path.read_text(encoding="utf-8"))
+    assert settings["env"]["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
+    assert "hooks" not in settings
+
+
+def test_install_env_and_hooks_coexist(tmp_path: Path):
+    """--settings 只能传一个文件：env 覆盖和 hook 必须合并进同一份。"""
+    cfg = Config(root=tmp_path / "root")
+    cfg.ensure_dirs()
+    cfg.claude = ClaudeConfig(
+        guard_enabled=True,
+        env={"ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic"},
+    )
+    path = GuardInstaller(cfg).install()
+    settings = json.loads(path.read_text(encoding="utf-8"))
+    assert settings["env"]["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
+    assert settings["hooks"]["PreToolUse"]
+
+
 def test_shipped_hook_exists():
     assert HOOK_SOURCE.exists(), "发行包里必须带上 hook 脚本"
 

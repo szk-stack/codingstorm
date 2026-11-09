@@ -31,6 +31,7 @@ from codingstorm.agents.base import (
     Handled,
     RunOutcome,
     describe_missing_result,
+    resolve_executable,
     truncate_payload,
 )
 from codingstorm.config import Config
@@ -55,7 +56,7 @@ class PiRuntime(AgentRuntime):
         resume: bool,
     ) -> list[str]:
         cfg = self.config.pi
-        cmd = [cfg.binary, "--mode", "json", "--session-id", session_id]
+        cmd = [resolve_executable(cfg.binary), "--mode", "json", "--session-id", session_id]
         session_dir = self._session_dir()
         if session_dir is not None:
             cmd += ["--session-dir", str(session_dir)]
@@ -80,7 +81,7 @@ class PiRuntime(AgentRuntime):
     ) -> list[str]:
         cfg = self.config.pi
         cmd = [
-            cfg.binary,
+            resolve_executable(cfg.binary),
             "--mode",
             "json",
             # 不写会话文件：沉淀是一次性的，多轮对话不该接在它后面
@@ -202,7 +203,7 @@ class PiRun(AgentRun):
             # Pi 没有 --max-turns。在**下一轮开始前**拦，而不是等它跑完再杀 ——
             # 跑完再杀等于多烧一次模型调用。
             limit = self.config.task.max_turns
-            if self._turns >= limit:
+            if limit > 0 and self._turns >= limit:
                 return Handled(fatal=f"超过 max_turns={limit}，已终止")
             return Handled()
 

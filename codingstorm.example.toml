@@ -53,11 +53,14 @@ windows = [["00:30", "08:30"]]
 #     cs window --project <项目> custom --windows "09:00-18:00"
 
 [task]
-# 单个任务的轮数上限。Claude Code 走 --max-turns；Pi 没有这个开关，
+# 单个任务的轮数上限。Claude Code / CodeBuddy 走 --max-turns；Pi 没有这个开关，
 # 平台自己数 turn_end 事件，在下一轮开始前拦下并杀进程组。
-# 不设上限的话，一个死循环 agent 能烧一整晚。
+# 0 = 不限制轮数（CLI 不传 --max-turns，Pi 不计数）；不建议，死循环 agent 能烧一整晚。
+# 复杂功能（比如给游戏加一套系统）50 轮可能不够；可以调到 100–200，
+# 但要接受更高的 token 成本，并优先考虑把任务拆小。
 max_turns = 50
 # 墙钟上限：超过就整组 SIGTERM→SIGKILL。
+# 0 = 不限制墙钟；idle_timeout 仍会拦住「没有任何输出」的卡死。
 wall_clock_timeout_s = 3600
 # 空闲上限：这么久没有任何输出就判定卡死。Claude Code 的 api_retry
 # 退避最长到 38 秒一轮，所以别设得比它小太多。
@@ -91,9 +94,7 @@ max_review_rounds = 6
 # prices_file = "~/codingstorm/prices.toml"
 
 # ---- 执行器 ----
-# 用哪个 CLI 跑任务：claude = Claude Code（默认，行为与旧版一致）；pi = Pi Coding Agent。
-# 项目可以在注册时覆盖（界面下拉，或 API 的 runtime 字段），同一台机器上可以
-# 一个项目用 Claude Code、另一个用 Pi。
+# 用哪个 CLI 跑任务：claude / pi / codebuddy。项目可以在注册时覆盖。
 [runtime]
 default = "claude"
 
@@ -118,6 +119,19 @@ project_trust = "ignore"
 # 透传参数，给 Pi 升级后新增的开关用（排在平台参数之后、prompt 之前）
 extra_args = []
 
+[codebuddy]
+# 腾讯云 CodeBuddy Code CLI（命令名 codebuddy 或 cbc）。
+# 它的 headless 模式兼容 Claude Code：-p --output-format stream-json、
+# --max-turns、--permission-mode、--resume、--settings、--add-dir 都有。
+binary = "codebuddy"
+# 非交互写文件/跑命令必须跳过权限确认；边界仍由下面的 guard hook 负责
+permission_mode = "bypassPermissions"
+# 留空用 CodeBuddy 自己的默认模型
+# model = "gpt-5"
+# settings_file 由程序自动接管（只含 hook，不混入 [claude.env]）
+# 透传参数，给 CLI 升级后新增的开关用
+extra_args = []
+
 [claude]
 binary = "claude"
 # 无人值守必须全自动放行；边界靠下面的 hook 拦。
@@ -125,7 +139,7 @@ permission_mode = "bypassPermissions"
 # settings_file 一般不用管 —— 启用 guard 后由程序自动接管（--settings 是合并语义）
 
 # ---- 边界拦截 ----
-# 规则对两个执行器都生效（历史原因，这些配置项仍挂在 [claude] 下）：
+# 规则对所有执行器都生效（历史原因，这些配置项仍挂在 [claude] 下）：
 #   · Claude Code 走 PreToolUse hook（bypassPermissions 会绕过权限检查，
 #     所以 permissions.deny 不可靠，只能靠 hook —— Phase 0 已实测）
 #   · Pi 没有权限系统，走平台生成的 tool_call 扩展（同一个 guard.py 判定）
@@ -137,4 +151,38 @@ guard_block_network = false
 guard_extra_deny = []
 # 白名单，命中则不拦（优先级高于所有 deny 规则）
 guard_allow = []
+
+# ---- 直连供应商（可选）----
+# 写进 --settings 的 env，**优先级高于 ~/.claude/settings.json**。
+# 用来绕开 CC Switch 这类只在本地起代理的工具：任务直连供应商，不用先开代理。
+# 注意：token 是明文，这个文件不要进版本库。
+# [claude.env]
+# ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
+# ANTHROPIC_AUTH_TOKEN = "sk-..."
+# ANTHROPIC_MODEL = "deepseek-v4-flash"
+# ANTHROPIC_DEFAULT_SONNET_MODEL = "deepseek-v4-flash"
+# ANTHROPIC_DEFAULT_OPUS_MODEL = "deepseek-v4-pro"
+
+# ---- 对话式助手 ----
+# 顶栏「助手」页里那个能用自然语言提需求的聊天窗口。
+#
+# 它是**独立进程**（仓库外的 codingstorm-assistant 目录），主服务只负责探测和
+# 按需拉起；崩了不影响任务队列，重启任务队列也不会打断正在写的那轮对话。
+# 助手的工具白名单只有四个：list_projects / create_task / get_project_context /
+# list_tasks —— 它能建任务，但不能改代码、不碰 shell，也不等待任务执行。
+[assistant]
+enabled = true
+# 助手首页。iframe 直接嵌它，任务链接也用它拼。
+url = "http://127.0.0.1:8001"
+# 让主服务在启动时顺手把它拉起来。关掉就自己跑 start-assistant.bat。
+autostart = false
+# 助手代码所在目录（里面要有 server.py）。
+# dir = "D:/project/codingstorm-assistant"
+# 留空 = 用当前解释器跑（助手只用标准库，不用另装依赖）
+# python = ""
+# 留空 = 复用 [claude.env] 的 ANTHROPIC_AUTH_TOKEN（同一家供应商时省事）。
+# 注意：明文密钥，这个文件不要进版本库。
+# api_key = "sk-..."
+# 留空 = 用助手自己 config.py 里的 MODEL
+# model = ""
 

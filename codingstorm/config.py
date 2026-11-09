@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 DEFAULT_ROOT = Path.home() / "codingstorm"
 
 # 执行器。项目可以覆盖全局默认值（见 ProjectCreate.runtime）。
-RuntimeName = Literal["claude", "pi"]
+RuntimeName = Literal["claude", "pi", "codebuddy"]
 
 
 class ServerConfig(BaseModel):
@@ -52,8 +52,12 @@ class SchedulerConfig(BaseModel):
 
 
 class TaskConfig(BaseModel):
-    max_turns: int = Field(default=50, ge=1)
-    wall_clock_timeout_s: int = Field(default=3600, ge=60)
+    # 0 = 不限制轮数：Claude/CodeBuddy 不传 --max-turns，Pi 不做轮数计数。
+    # 默认 50 是成本护栏；调大或关掉前先想清楚。
+    max_turns: int = Field(default=50, ge=0)
+    # 0 = 不限制墙钟：进程可以一直跑到自己结束。
+    # 空闲超时仍然生效，防止「没有任何输出」的卡死。
+    wall_clock_timeout_s: int = Field(default=3600, ge=0)
     # 超过这个时长没有任何事件就判定卡死
     idle_timeout_s: int = Field(default=300, ge=30)
 
@@ -85,6 +89,11 @@ class ClaudeConfig(BaseModel):
     permission_mode: str = "bypassPermissions"
     # 装配 PreToolUse hook 的 settings 文件；None 表示用 ~/.claude/settings.json
     settings_file: Path | None = None
+    # 直接写进 `--settings` 的 env。**优先级高于 ~/.claude/settings.json**，
+    # 用来绕开 CC Switch 这类本地代理，让任务直连供应商。
+    # 例：[claude.env] ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
+    # 注意：这是明文密钥，codingstorm.toml 不要进版本库。
+    env: dict[str, str] = Field(default_factory=dict)
 
     # ---- 边界拦截 ----
     # bypassPermissions 会绕过所有权限检查，所以 permissions.deny 不可靠，
@@ -154,6 +163,61 @@ class PiConfig(BaseModel):
         return value or None
 
 
+class CodeBuddyConfig(BaseModel):
+    """CodeBuddy Code CLI（腾讯云代码助手）。
+
+    headless 模式是 Claude Code 兼容的：`-p --output-format stream-json`、
+    `--max-turns`、`--permission-mode`、`--resume`、`--settings`、`--add-dir`
+    都有，事件流也是 init / assistant / result，所以复用 ClaudeRun 的解析器。
+
+    和 Claude Code 的差异：
+    - 新会话不传 `--session-id`（CLI 自己生成，从 init 事件里拿回来），
+      续跑用 `--resume <id>`；
+    - 非交互写文件 / 跑命令必须加 `-y`（或 `--dangerously-skip-permissions`）；
+    - 工具黑名单参数是 `--disallowedTools`（驼峰）。
+    """
+
+    binary: str = "codebuddy"
+    permission_mode: str = "bypassPermissions"
+    model: str | None = None
+    # 由 GuardInstaller 生成，只含 PreToolUse hook（不混入 Claude 的 provider env）
+    settings_file: Path | None = None
+    extra_args: list[str] = Field(default_factory=list)
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value: object) -> object:
+        return value or None
+
+
+class AssistantConfig(BaseModel):
+    """对话式助手（独立进程，默认在 8001 端口）。
+
+    它是 `朴素agent` 的一个精简 fork：只保留「理解需求 → 建任务」这一条链路，
+    工具白名单只有 list_projects / create_task / get_project_context / list_tasks。
+    前端用 iframe 把它嵌进「助手」页，所以这里只需要一个 URL。
+
+    为什么不把它并进主进程：它是 `http.server` + 生成器流式输出，和 FastAPI 的
+    asyncio 事件循环混在一起没有好处；独立进程还能单独重启、单独换模型，崩了也不
+    影响任务队列。
+    """
+
+    enabled: bool = True
+    # 助手首页。iframe 直接嵌它，任务链接也用它拼
+    url: str = "http://127.0.0.1:8001"
+    # 随平台一起把助手进程拉起来。关掉就自己跑 start-assistant.bat
+    autostart: bool = False
+    # 助手代码所在目录（要求里面有 server.py）
+    dir: Path | None = None
+    # 留空 = 用当前解释器（助手只用标准库，跟着平台跑就行）
+    python: str = ""
+    # 留空 = 复用 [claude.env] 的 ANTHROPIC_AUTH_TOKEN（同一家供应商时省事）。
+    # 注意：这是明文密钥，codingstorm.toml 不要进版本库。
+    api_key: str = ""
+    # 留空 = 用助手自己 config.py 里的 MODEL
+    model: str = ""
+
+
 class Config(BaseModel):
     root: Path = DEFAULT_ROOT
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -164,6 +228,8 @@ class Config(BaseModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     pi: PiConfig = Field(default_factory=PiConfig)
+    codebuddy: CodeBuddyConfig = Field(default_factory=CodeBuddyConfig)
+    assistant: AssistantConfig = Field(default_factory=AssistantConfig)
     pricing: PricingConfig = Field(default_factory=PricingConfig)
 
     @property
@@ -223,4 +289,10 @@ class Config(BaseModel):
         pi = data.get("pi")
         if isinstance(pi, dict) and pi.get("session_dir"):
             pi["session_dir"] = Path(pi["session_dir"]).expanduser()
+        codebuddy = data.get("codebuddy")
+        if isinstance(codebuddy, dict) and codebuddy.get("settings_file"):
+            codebuddy["settings_file"] = Path(codebuddy["settings_file"]).expanduser()
+        assistant = data.get("assistant")
+        if isinstance(assistant, dict) and assistant.get("dir"):
+            assistant["dir"] = Path(assistant["dir"]).expanduser()
         return cls.model_validate(data)

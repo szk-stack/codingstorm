@@ -288,6 +288,19 @@ class Scheduler:
     def running(self) -> dict[str, asyncio.Task]:
         return dict(self._running)
 
+    async def cancel_running(self, task_id: str) -> bool:
+        """取消一个正在执行的任务。
+
+        不能只 kill 子进程：`_run` 还会继续走「失败收尾」，把状态写成 failed。
+        取消 asyncio task 才会走 `_run` 的 CancelledError 分支，标成 interrupted。
+        """
+        task = self._running.get(task_id)
+        if task is None:
+            return False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return True
+
     # ---------- 崩溃恢复 ----------
 
     async def recover(self) -> list[str]:
@@ -303,14 +316,14 @@ class Scheduler:
             starttime = row["pid_starttime"]
             if pid and pid_is_alive(pid, starttime):
                 log.warning("回收孤儿进程 pid=%s（任务 %s）", pid, task_id)
-                kill_process_group(pid, signal.SIGTERM)
+                await asyncio.to_thread(kill_process_group, pid, signal.SIGTERM)
                 for _ in range(20):  # 最多等 2 秒
                     await asyncio.sleep(0.1)
                     if not pid_is_alive(pid, starttime):
                         break
                 else:
                     log.warning("pid=%s 未响应 SIGTERM，升级为 SIGKILL", pid)
-                    kill_process_group(pid, signal.SIGKILL)
+                    await asyncio.to_thread(kill_process_group, pid, signal.SIGKILL)
             await self.store.set_status(
                 task_id, TaskStatus.INTERRUPTED, error_text="平台重启，任务被中断"
             )
@@ -501,6 +514,9 @@ class Scheduler:
                 runtime=runtime,
             )
         except asyncio.CancelledError:
+            await self.store.finish_attempt(
+                task_id, attempt_no, is_error=True, error_text="任务被取消"
+            )
             await self.store.set_status(task_id, TaskStatus.INTERRUPTED, error_text="任务被取消")
             raise
         except Exception as exc:
@@ -536,7 +552,18 @@ class Scheduler:
         )
 
         if not outcome.ok:
-            reason = outcome.error_text or f"执行失败（subtype={outcome.result_subtype}）"
+            if outcome.result_subtype == "error_max_turns":
+                if self.config.task.max_turns > 0:
+                    reason = (
+                        f"达到轮数上限（max_turns={self.config.task.max_turns}），任务未完成；"
+                        "可以点「继续」让它接着跑，或调大 [task].max_turns"
+                    )
+                else:
+                    reason = "模型报告达到轮数上限（平台未设上限）；可以继续对话"
+            elif outcome.result_subtype == "error_max_tokens":
+                reason = "模型输出达到上限被截断；可以继续对话，或把任务拆小"
+            else:
+                reason = outcome.error_text or f"执行失败（subtype={outcome.result_subtype}）"
             await self.store.set_status(task_id, TaskStatus.FAILED, error_text=reason)
             log.warning("任务 %s 失败: %s", task_id, reason)
             return

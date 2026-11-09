@@ -12,6 +12,7 @@ from codingstorm.agents.base import (
     truncate_payload,
 )
 from codingstorm.agents.claude import ClaudeRuntime
+from codingstorm.agents.codebuddy import CodeBuddyRuntime
 from codingstorm.agents.pi import PiRuntime
 from codingstorm.config import Config
 from codingstorm.config import RuntimeName
@@ -19,6 +20,7 @@ from codingstorm.config import RuntimeName
 _RUNTIMES: dict[str, type[AgentRuntime]] = {
     ClaudeRuntime.name: ClaudeRuntime,
     PiRuntime.name: PiRuntime,
+    CodeBuddyRuntime.name: CodeBuddyRuntime,
 }
 
 

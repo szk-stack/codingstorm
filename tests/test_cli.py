@@ -22,6 +22,7 @@ def parse(argv: list[str]):
         (["projects"], "projects"),
         (["runtime", "demo"], "runtime"),
         (["runtime", "demo", "pi"], "runtime"),
+        (["runtime", "demo", "codebuddy"], "runtime"),
         (["submit", "demo", "标题"], "submit"),
         (["ls"], "ls"),
         (["show", "abc"], "show"),

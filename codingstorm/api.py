@@ -23,6 +23,7 @@ from codingstorm.agent_state import (
     validate_gate,
     write_state,
 )
+from codingstorm import fspick
 from codingstorm.context import POINTER_SOFT_LIMIT_BYTES
 from codingstorm.diff_render import render_diff
 from codingstorm.git_ops import Git, GitError
@@ -109,6 +110,38 @@ async def create_project(request: Request, spec: ProjectCreate) -> ProjectOut:
     except RepoError as exc:
         raise HTTPException(400, str(exc)) from exc
     return await store.create_project(spec)
+
+
+@router.post("/fs/pick-directory")
+async def pick_directory() -> dict[str, str | None]:
+    """弹系统文件夹选择器，返回绝对路径；取消返回 null。
+
+    仅本机运行服务时有意义 —— 对话框由服务端进程弹出，不是浏览器的。
+    """
+    try:
+        path = await asyncio.to_thread(fspick.pick_directory)
+    except fspick.PickerUnavailable as exc:
+        raise HTTPException(501, str(exc)) from exc
+    return {"path": path}
+
+
+# ---------- 对话式助手（sidecar） ----------
+
+
+@router.get("/assistant/info")
+async def assistant_info(request: Request) -> dict:
+    """助手位置与健康状态。前端据此决定是嵌 iframe 还是显示「启动助手」。"""
+    return await request.app.state.assistant.snapshot_async()
+
+
+@router.post("/assistant/start")
+async def assistant_start(request: Request) -> dict:
+    """把助手进程拉起来（已在跑则直接返回）。前端「启动助手」按钮和重试用。"""
+    ok, message = await request.app.state.assistant.start_async()
+    info = await request.app.state.assistant.snapshot_async()
+    info["ok"] = ok
+    info["message"] = message if not ok else info["message"]
+    return info
 
 
 @router.get("/projects/{project_id}", response_model=ProjectOut)
@@ -306,12 +339,16 @@ async def cancel_task(request: Request, task_id: str) -> TaskOut:
     task = await store.get_task(task_id)
     if task is None:
         raise HTTPException(404, "任务不存在")
-    if task.status != TaskStatus.QUEUED:
-        raise HTTPException(409, "只能取消还在排队的任务")
-
-    runner = request.app.state.runner
-    await store.set_status(task_id, TaskStatus.CANCELLED)
-    await runner.kill(task_id)
+    if task.status == TaskStatus.QUEUED:
+        runner = request.app.state.runner
+        await store.set_status(task_id, TaskStatus.CANCELLED)
+        await runner.kill(task_id)
+    elif task.status == TaskStatus.RUNNING:
+        scheduler = request.app.state.scheduler
+        if not await scheduler.cancel_running(task_id):
+            raise HTTPException(409, "任务已经结束，无法取消")
+    else:
+        raise HTTPException(409, "只能取消排队中或执行中的任务")
     refreshed = await store.get_task(task_id)
     assert refreshed is not None
     return refreshed

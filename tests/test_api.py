@@ -106,18 +106,27 @@ def test_new_repo_head_points_at_target_branch(client: TestClient):
     assert head.strip() == "ref: refs/heads/main"
 
 
-def test_explicit_repo_path_must_exist(client: TestClient):
-    r = client.post("/api/projects", json={"name": "x", "repo_path": "/nope/nowhere.git"})
-    assert r.status_code == 400
-    assert "不存在" in r.json()["detail"]
+def test_explicit_repo_path_auto_created(client: TestClient, tmp_path: Path):
+    """填了不存在的路径：自动建目录 + git init，不再报「不存在」。"""
+    path = tmp_path / "new" / "repo"
+    r = client.post("/api/projects", json={"name": "x", "repo_path": str(path)})
+    assert r.status_code == 201
+    assert (path / ".git").exists()
 
 
-def test_explicit_repo_path_must_be_a_repo(client: TestClient, tmp_path: Path):
+def test_explicit_repo_path_auto_inits_plain_folder(client: TestClient, tmp_path: Path):
+    """目录存在但不是仓库：原地 init，并把已有文件提交成初始提交。"""
     plain = tmp_path / "not-a-repo"
     plain.mkdir()
+    (plain / "hello.txt").write_text("hi", encoding="utf-8")
     r = client.post("/api/projects", json={"name": "x", "repo_path": str(plain)})
-    assert r.status_code == 400
-    assert "不是 git 仓库" in r.json()["detail"]
+    assert r.status_code == 201
+    assert (plain / ".git").exists()
+    log = subprocess.run(
+        ["git", "log", "--oneline", "-1"], cwd=plain,
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert "导入现有文件" in log.stdout
 
 
 def test_missing_target_branch_rejected(client: TestClient, make_repo):
@@ -148,6 +157,7 @@ def test_duplicate_project_name_rejected(client: TestClient):
 def test_project_name_pattern_enforced(client: TestClient):
     r = client.post("/api/projects", json={"name": "有 空格"})
     assert r.status_code == 422
+    assert "项目名只能用" in str(r.json())
 
 
 def test_get_missing_project_returns_404(client: TestClient):
@@ -442,6 +452,9 @@ def test_project_runtime_at_creation_and_patch(client: TestClient):
     r = client.patch(f"/api/projects/{p['id']}", json={"runtime": "pi"})
     assert r.status_code == 200 and r.json()["runtime"] == "pi"
 
+    r = client.patch(f"/api/projects/{p['id']}", json={"runtime": "codebuddy"})
+    assert r.status_code == 200 and r.json()["runtime"] == "codebuddy"
+
     r = client.patch(f"/api/projects/{p['id']}", json={"runtime": None})
     assert r.status_code == 200 and r.json()["runtime"] is None
 
@@ -466,6 +479,9 @@ def test_project_runtime_at_creation_and_patch(client: TestClient):
     r = client.patch(f"/api/projects/{p['id']}", json={"runtime": "pi"})
     assert r.status_code == 200 and r.json()["runtime"] == "pi"
 
+    r = client.patch(f"/api/projects/{p['id']}", json={"runtime": "codebuddy"})
+    assert r.status_code == 200 and r.json()["runtime"] == "codebuddy"
+
     r = client.patch(f"/api/projects/{p['id']}", json={"runtime": None})
     assert r.status_code == 200 and r.json()["runtime"] is None
 
@@ -473,3 +489,55 @@ def test_project_runtime_at_creation_and_patch(client: TestClient):
     assert client.patch(
         f"/api/projects/{p['id']}", json={"runtime": "other"}
     ).status_code == 422
+
+
+def test_pick_directory_returns_selected_path(client: TestClient, monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("codingstorm.api.fspick.pick_directory", lambda: str(tmp_path))
+    r = client.post("/api/fs/pick-directory")
+    assert r.status_code == 200
+    assert r.json()["path"] == str(tmp_path)
+
+
+def test_pick_directory_cancel_returns_null(client: TestClient, monkeypatch):
+    monkeypatch.setattr("codingstorm.api.fspick.pick_directory", lambda: None)
+    r = client.post("/api/fs/pick-directory")
+    assert r.status_code == 200
+    assert r.json()["path"] is None
+
+
+def test_pick_directory_unavailable_returns_501(client: TestClient, monkeypatch):
+    from codingstorm import fspick
+
+    def boom():
+        raise fspick.PickerUnavailable("没有图形界面")
+
+    monkeypatch.setattr("codingstorm.api.fspick.pick_directory", boom)
+    r = client.post("/api/fs/pick-directory")
+    assert r.status_code == 501
+    assert "没有图形界面" in r.json()["detail"]
+
+
+def test_pick_directory_returns_selected_path(client: TestClient, monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("codingstorm.api.fspick.pick_directory", lambda: str(tmp_path))
+    r = client.post("/api/fs/pick-directory")
+    assert r.status_code == 200
+    assert r.json()["path"] == str(tmp_path)
+
+
+def test_pick_directory_cancel_returns_null(client: TestClient, monkeypatch):
+    monkeypatch.setattr("codingstorm.api.fspick.pick_directory", lambda: None)
+    r = client.post("/api/fs/pick-directory")
+    assert r.status_code == 200
+    assert r.json()["path"] is None
+
+
+def test_pick_directory_unavailable_returns_501(client: TestClient, monkeypatch):
+    from codingstorm import fspick
+
+    def boom():
+        raise fspick.PickerUnavailable("没有图形界面")
+
+    monkeypatch.setattr("codingstorm.api.fspick.pick_directory", boom)
+    r = client.post("/api/fs/pick-directory")
+    assert r.status_code == 501
+    assert "没有图形界面" in r.json()["detail"]

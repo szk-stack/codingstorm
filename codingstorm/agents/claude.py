@@ -22,6 +22,7 @@ from codingstorm.agents.base import (
     Handled,
     RunOutcome,
     describe_missing_result,
+    resolve_executable,
     truncate_payload,
 )
 from codingstorm.config import Config
@@ -43,7 +44,7 @@ class ClaudeRuntime(AgentRuntime):
     ) -> list[str]:
         cfg = self.config
         cmd = [
-            cfg.claude.binary,
+            resolve_executable(cfg.claude.binary),
             "-p",
             prompt,
             "--output-format",
@@ -56,9 +57,9 @@ class ClaudeRuntime(AgentRuntime):
             cmd += ["--resume", session_id]
         else:
             cmd += ["--session-id", session_id]
+        if cfg.task.max_turns > 0:
+            cmd += ["--max-turns", str(cfg.task.max_turns)]
         cmd += [
-            "--max-turns",
-            str(cfg.task.max_turns),
             "--permission-mode",
             cfg.claude.permission_mode,
             # 无人值守时必须禁掉：否则它会停下来等一个永远不会来的回答
@@ -80,7 +81,7 @@ class ClaudeRuntime(AgentRuntime):
     ) -> list[str]:
         cfg = self.config.claude
         cmd = [
-            cfg.binary,
+            resolve_executable(cfg.binary),
             "-p",
             prompt,
             "--output-format",

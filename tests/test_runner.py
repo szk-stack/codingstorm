@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,7 @@ from codingstorm.runner import (
     MAX_PAYLOAD_BYTES,
     RunOutcome,
     Runner,
+    kill_process_group,
     read_pid_starttime,
     truncate_payload,
 )
@@ -334,6 +337,18 @@ def test_truncate_payload_replaces_large_objects():
 
 def test_read_pid_starttime_returns_none_for_dead_pid():
     assert read_pid_starttime(999_999_999) is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="taskkill 只在 Windows 上")
+def test_kill_process_group_windows():
+    """Windows 没有 os.killpg；不处理会让成功的任务在收尾时被标成 failed。"""
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        assert kill_process_group(proc.pid), "taskkill 应当成功"
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
 
 
 def test_missing_result_falls_back_to_log_tail(env, tmp_path: Path):

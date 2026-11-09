@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -79,7 +80,24 @@ def pid_is_alive(pid: int, expected_starttime: str | None) -> bool:
 
 
 def kill_process_group(pid: int, sig: int = signal.SIGTERM) -> bool:
-    """向整个进程组发信号，覆盖它拉起的 bash / ripgrep 等子进程。"""
+    """向整个进程组发信号，覆盖它拉起的 bash / ripgrep 等子进程。
+
+    Windows 没有 `os.killpg` / 进程组信号，用 `taskkill /T /F` 杀整棵树。
+    不处理的话，任务收尾时会抛 `module 'os' has no attribute 'killpg'`，
+    把一次成功的执行标成 failed —— 实测踩过。
+    """
+    if os.name == "nt":
+        try:
+            proc = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return proc.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
     try:
         os.killpg(os.getpgid(pid), sig)
     except (ProcessLookupError, PermissionError, OSError):
@@ -200,6 +218,11 @@ class Runner:
                 )
                 await self.store.touch_task(task_id)
                 await self._supervise(proc, log_path, task_id, outcome)
+        except asyncio.CancelledError:
+            # 调度器取消任务时，先把整棵进程树收掉再往上抛；
+            # 否则 Unix 上 start_new_session 的子进程会变成孤儿。
+            await self.kill(task_id)
+            raise
         finally:
             self._procs.pop(task_id, None)
             self._seq.pop(task_id, None)
@@ -229,8 +252,12 @@ class Runner:
             pos = 0
             carry = b""
             while True:
-                # 墙钟上限每轮都查 —— 持续有输出也不能无限跑下去
-                if asyncio.get_running_loop().time() - started > cfg.wall_clock_timeout_s:
+                # 墙钟上限每轮都查 —— 持续有输出也不能无限跑下去。
+                # 0 = 不限制（调用方显式关掉护栏）。
+                if (
+                    cfg.wall_clock_timeout_s > 0
+                    and asyncio.get_running_loop().time() - started > cfg.wall_clock_timeout_s
+                ):
                     outcome.error_text = f"任务超过墙钟上限 {cfg.wall_clock_timeout_s}s，已终止"
                     await self.kill(task_id)
                     return
@@ -381,17 +408,12 @@ class Runner:
         proc = self._procs.get(task_id)
         if proc is None or proc.returncode is not None:
             return
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            return
+        # taskkill 在 Windows 上可能阻塞几百毫秒，丢到线程里别卡事件循环
+        await asyncio.to_thread(kill_process_group, proc.pid, signal.SIGTERM)
         try:
             await asyncio.wait_for(proc.wait(), timeout=10)
         except TimeoutError:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except OSError:
-                pass
+            await asyncio.to_thread(kill_process_group, proc.pid, signal.SIGKILL)
 
     @property
     def active(self) -> dict[str, asyncio.subprocess.Process]:

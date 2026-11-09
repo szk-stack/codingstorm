@@ -119,7 +119,8 @@ def test_failure_moves_to_failed_with_reason(env):
 
         task = (await store.list_tasks())[0]
         assert task.status == TaskStatus.FAILED
-        assert "error_max_turns" in (task.error_text or "")
+        assert "轮数上限" in (task.error_text or "")
+        assert "max_turns=50" in (task.error_text or "")
 
     run(main())
 
@@ -392,5 +393,23 @@ def test_stop_marks_running_interrupted(env):
         task = (await store.list_tasks())[0]
         assert task.status == TaskStatus.INTERRUPTED
         assert runner.killed, "正在跑的任务应当被终止"
+
+    run(main())
+
+
+def test_cancel_running_cancels_asyncio_task():
+    """运行中的任务不能只 kill 子进程，要取消 asyncio task 才能走 interrupted 分支。"""
+    async def main():
+        sched = Scheduler.__new__(Scheduler)
+        sched._running = {}
+
+        async def forever():
+            await asyncio.sleep(60)
+
+        task = asyncio.create_task(forever())
+        sched._running["t1"] = task
+        assert await sched.cancel_running("t1") is True
+        assert task.cancelled()
+        assert await sched.cancel_running("missing") is False
 
     run(main())

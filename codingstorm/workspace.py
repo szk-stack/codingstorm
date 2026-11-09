@@ -66,10 +66,11 @@ def slugify(text: str, max_len: int = 32) -> str:
 async def prepare_repo(
     config: Config, *, name: str, repo_path: str, target_branch: str
 ) -> Path:
-    """注册项目时确定仓库路径，并挡住一眼能看出来的错误。
+    """注册项目时确定仓库路径，按需自动初始化。
 
-    - 没给路径：用 `{root}/repos/<name>.git`，不存在就顺手建一个空裸仓库
-    - 给了路径：必须存在，且必须是个 git 仓库
+    - 没给路径：用 `{root}/repos/<name>.git`，不存在就建空裸仓库
+    - 给了路径：不存在就创建目录并 `git init`；存在但不是仓库也在原地 `git init`
+    - 新仓库里有文件：做一次初始提交，否则 AI 的 worktree 看不到这些文件
     - 目标分支：仓库已有提交时必须存在；空仓库放行（显然是还没 push）
     """
     explicit = bool(repo_path.strip())
@@ -77,13 +78,27 @@ async def prepare_repo(
     # 后面的判定要拿它跟 git 的输出比，必须先归一化
     path = path.resolve()
 
-    if not path.exists():
-        if explicit:
-            raise RepoError(f"仓库路径不存在：{path}")
+    if not explicit:
+        if path.exists():
+            # 平台自己的 repos 目录：存在就必须已经是仓库，不替它猜
+            return await _validate_repo(path, target_branch)
         path.parent.mkdir(parents=True, exist_ok=True)
         # 用 path.name，因为 cwd 已经是父目录了
         await Git(path.parent).run("init", "--bare", "-b", target_branch, path.name)
         log.info("已创建空裸仓库 %s，等第一次 push", path)
+        return path
+
+    if path == Path(path.anchor):
+        raise RepoError(f"不能使用磁盘根目录作为项目仓库：{path}")
+    if path.exists() and not path.is_dir():
+        raise RepoError(f"仓库路径不是文件夹：{path}")
+    if not path.exists():
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RepoError(f"无法创建仓库目录 {path}：{exc}") from exc
+        await _init_repo(path, target_branch)
+        log.info("已自动初始化仓库 %s", path)
         return path
 
     repo = Git(path)
@@ -92,14 +107,61 @@ async def prepare_repo(
     if git_dir is not None and not git_dir.is_absolute():
         git_dir = path / git_dir
     # `.`（裸仓库）或 `.git`（普通仓库）都算「就在这个路径上」。指向别处说明 git 是
-    # 往上找到了某个上级仓库 —— 那不是我们要的（实测：主目录是仓库时，随便一个
-    # 普通目录都能通过检查）。
+    # 往上找到了某个上级仓库 —— 那不是我们要的，就在原地初始化一个自己的仓库。
     if git_dir is None or not (git_dir == path or git_dir.parent == path):
-        raise RepoError(f"不是 git 仓库：{path}")
+        await _init_repo(path, target_branch)
+        log.info("目录不是 git 仓库，已自动初始化 %s", path)
+        repo = Git(path)
+        git_dir = path / ".git"
 
     branches = await repo.branches()
+    is_bare = git_dir == path
+    if not branches and not is_bare:
+        await _commit_existing(path, repo)
+        branches = await repo.branches()
     if branches and target_branch not in branches:
-        raise RepoError(f"仓库里没有 {target_branch} 分支，现有分支：{'、'.join(branches)}")
+        raise RepoError(
+            f"仓库里没有 {target_branch} 分支，现有分支：{'、'.join(branches)}"
+        )
+    return path
+
+
+async def _init_repo(path: Path, target_branch: str) -> None:
+    try:
+        await Git(path).run("init", "-b", target_branch)
+    except Exception as exc:
+        raise RepoError(f"初始化 git 仓库失败（{path}）：{exc}") from exc
+
+
+async def _commit_existing(path: Path, repo: Git) -> None:
+    """把目录里已有的文件提交成初始提交，否则 worktree 里看不到它们。"""
+    status = await repo.run("status", "--porcelain")
+    if not status.strip():
+        return
+    try:
+        await repo.run("add", "-A")
+        await repo.run(
+            "-c", "user.name=codingstorm", "-c", "user.email=cs@localhost",
+            "commit", "-m", "codingstorm: 导入现有文件",
+        )
+    except Exception as exc:
+        raise RepoError(f"初始化仓库后提交现有文件失败（{path}）：{exc}") from exc
+
+
+async def _validate_repo(path: Path, target_branch: str) -> Path:
+    """校验一个已存在的仓库（裸仓库或普通仓库）。"""
+    repo = Git(path)
+    raw = (await repo.run("rev-parse", "--git-dir", check=False)).strip()
+    git_dir = Path(raw) if raw else None
+    if git_dir is not None and not git_dir.is_absolute():
+        git_dir = path / git_dir
+    if git_dir is None or not (git_dir == path or git_dir.parent == path):
+        raise RepoError(f"不是 git 仓库：{path}")
+    branches = await repo.branches()
+    if branches and target_branch not in branches:
+        raise RepoError(
+            f"仓库里没有 {target_branch} 分支，现有分支：{'、'.join(branches)}"
+        )
     return path
 
 

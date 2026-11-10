@@ -35,6 +35,7 @@ from codingstorm.models import (
     FileOut,
     ModelUsage,
     ProjectCreate,
+    ProjectModelIn,
     ProjectOut,
     ProjectRuntimeIn,
     ProjectWindowIn,
@@ -53,6 +54,7 @@ from codingstorm.models import (
     WindowOut,
     WindowToggle,
 )
+from codingstorm.model_catalog import available_models
 from codingstorm.store import Store
 from codingstorm.timing import (
     Rule,
@@ -165,6 +167,39 @@ async def update_project(
     if await store.get_project(project_id) is None:
         raise HTTPException(404, "项目不存在")
     return await store.set_project_runtime(project_id, spec.runtime)
+
+
+@router.patch("/projects/{project_id}/model", response_model=ProjectOut)
+async def update_project_model(
+    request: Request, project_id: str, spec: ProjectModelIn
+) -> ProjectOut:
+    """切换项目级模型覆盖（目前只对 CodeBuddy 生效）。null = 跟随全局。
+
+    单独一个端点而不是塞进 PATCH /projects/{id}：模型下拉的「跟随全局」提交
+    null，和执行器字段共用一次 UPDATE 会把 runtime 也一起清掉。
+    """
+    store = _store(request)
+    if await store.get_project(project_id) is None:
+        raise HTTPException(404, "项目不存在")
+    return await store.set_project_runtime_model(project_id, spec.model)
+
+
+@router.get("/runtime/models")
+async def runtime_models(request: Request) -> dict:
+    """前端模型下拉的候选清单。
+
+    顺序：`[codebuddy] models` 显式配置 > 本机 CLI `--help` 解析 > 内置兜底。
+    解析 CLI 会起子进程，丢线程里跑，别堵住事件循环。
+    """
+    config = request.app.state.config
+    models, source = await asyncio.to_thread(available_models, config)
+    return {
+        "models": models,
+        "source": source,
+        "global_model": config.codebuddy.model or "",
+        # 项目 runtime 为 null 时，前端要靠它判断该不该显示模型下拉
+        "default_runtime": config.runtime.default,
+    }
 
 
 async def _require_repo_ready(project: ProjectOut) -> None:

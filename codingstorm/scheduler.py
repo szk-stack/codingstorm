@@ -390,6 +390,8 @@ class Scheduler:
         # 项目级执行器覆盖；None = 跟随全局默认。整条任务固定用同一个执行器，
         # 不按轮次切换 —— 会话 id、上下文格式都是执行器相关的。
         runtime = project.runtime or self.config.runtime.default
+        # 项目级模型覆盖只影响 CodeBuddy；其他执行器拿到参数也会自己忽略。
+        runtime_model = project.runtime_model
 
         attempt_no = await self.store.next_attempt_no(task_id)
         await self.store.start_attempt(task_id, attempt_no, runtime=runtime)
@@ -512,6 +514,7 @@ class Scheduler:
                 context_dirs=[ctx.root, run_path] if run_path is not None else None,
                 resume=resume,
                 runtime=runtime,
+                runtime_model=runtime_model,
             )
         except asyncio.CancelledError:
             await self.store.finish_attempt(

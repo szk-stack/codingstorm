@@ -28,6 +28,14 @@ const state = {
   lastAssistantText: '',
 };
 
+// 项目级模型下拉：候选来自 GET /api/runtime/models（本机 CLI --help 解析）
+const modelState = {
+  loaded: false,
+  models: [],
+  globalModel: '',
+  defaultRuntime: 'claude',
+};
+
 // ---------------- 工具 ----------------
 
 let toastTimer = null;
@@ -152,8 +160,19 @@ function renderProjects() {
     },
       el('span', { class: 'proj-glyph', text: p.name.slice(0, 1).toUpperCase() }),
       el('div', { text: p.name }),
-      el('div', { class: 'muted', text: [p.target_branch, p.runtime].filter(Boolean).join(' · ') })));
+      el('div', {
+        class: 'muted',
+        title: p.runtime_model || '',
+        text: [p.target_branch, p.runtime, shortModel(p.runtime_model)]
+          .filter(Boolean).join(' · '),
+      })));
   }
+}
+
+/** 项目列表宽度有限，模型 id（尤其 cmcc: 前缀那些）截短显示，完整值放 title。 */
+function shortModel(value) {
+  if (!value) return '';
+  return value.length > 18 ? `${value.slice(0, 16)}…` : value;
 }
 
 async function createProject(form) {
@@ -169,6 +188,7 @@ async function createProject(form) {
   data.target_branch = (data.target_branch || 'main').trim() || 'main';
   // 「跟随全局」提交的是空串，交给服务端当 null 处理也没问题，但别把空字段塞进请求
   if (!data.runtime) delete data.runtime;
+  if (!data.runtime_model) delete data.runtime_model;
   try {
     const p = await api('/api/projects', { method: 'POST', body: JSON.stringify(data) });
     form.reset();
@@ -219,12 +239,86 @@ async function changeProjectRuntime(value) {
     if (idx >= 0) state.projects[idx] = p;
     renderProjects();
     select.value = p.runtime || '';
+    syncModelSelect();   // 切到 claude/pi 就隐藏模型下拉，切回来再显示
     toast(`执行器：${p.runtime || '跟随全局'}`);
   } catch (err) {
     toast(`切换失败：${err.message}`, true);
     // 回滚到服务端的已知值，别让下拉框显示一个没生效的选择
     const current = state.projects.find((x) => x.id === state.projectId);
     select.value = current?.runtime || '';
+  } finally {
+    select.disabled = false;
+  }
+}
+
+// ---------------- 项目级模型 ----------------
+
+/** 模型下拉只对 CodeBuddy 项目有意义：别的执行器不认这些模型 id。 */
+function isCodeBuddyProject(project) {
+  return (project?.runtime || modelState.defaultRuntime) === 'codebuddy';
+}
+
+/** 值不在候选里（配置换了 / 以前手填过）时补一个选项，别让下拉悄悄清空。 */
+function ensureModelOption(select, value) {
+  if (!value || [...select.options].some((o) => o.value === value)) return;
+  select.prepend(el('option', { value, text: `${value}（自定义）` }));
+}
+
+async function loadModelOptions() {
+  try {
+    const info = await api('/api/runtime/models');
+    modelState.models = info.models || [];
+    modelState.globalModel = info.global_model || '';
+    modelState.defaultRuntime = info.default_runtime || 'claude';
+  } catch (err) {
+    // 拿不到候选不影响项目功能，下拉只留「跟随全局」
+    modelState.models = [];
+  }
+  modelState.loaded = true;
+  const label = modelState.globalModel
+    ? `模型：跟随全局（${modelState.globalModel}）`
+    : '模型：跟随全局（CLI 默认）';
+  for (const select of [$('#project-model'), $('#project-form').elements.runtime_model]) {
+    if (!select) continue;
+    const current = select.value;
+    select.replaceChildren(el('option', { value: '', text: label }));
+    for (const m of modelState.models) select.append(el('option', { value: m, text: m }));
+    ensureModelOption(select, current);
+    select.value = current;
+  }
+  syncModelSelect();
+}
+
+/** 按当前项目的有效执行器决定显不显示，并同步下拉的值。 */
+function syncModelSelect() {
+  const project = state.projects.find((p) => p.id === state.projectId);
+  const select = $('#project-model');
+  select.hidden = !project || !isCodeBuddyProject(project);
+  if (project && modelState.loaded) {
+    const value = project.runtime_model || '';
+    ensureModelOption(select, value);
+    select.value = value;
+  }
+}
+
+async function changeProjectModel(value) {
+  if (!state.projectId) return;
+  const select = $('#project-model');
+  select.disabled = true;
+  try {
+    const p = await api(`/api/projects/${state.projectId}/model`, {
+      method: 'PATCH',
+      body: JSON.stringify({ model: value || null }),
+    });
+    const idx = state.projects.findIndex((x) => x.id === p.id);
+    if (idx >= 0) state.projects[idx] = p;
+    renderProjects();
+    select.value = p.runtime_model || '';
+    toast(`模型：${p.runtime_model || '跟随全局'}`);
+  } catch (err) {
+    toast(`切换失败：${err.message}`, true);
+    const current = state.projects.find((x) => x.id === state.projectId);
+    select.value = current?.runtime_model || '';
   } finally {
     select.disabled = false;
   }
@@ -241,6 +335,7 @@ async function selectProject(id) {
   const runtimeSelect = $('#project-runtime');
   runtimeSelect.hidden = !project;
   if (project) runtimeSelect.value = project.runtime || '';
+  syncModelSelect();
   await loadTasks();
   await loadSchedules();
   await loadContext();
@@ -1589,6 +1684,9 @@ function init() {
   $('#project-runtime').addEventListener('change', (e) => {
     changeProjectRuntime(e.target.value);
   });
+  $('#project-model').addEventListener('change', (e) => {
+    changeProjectModel(e.target.value);
+  });
 
   document.querySelectorAll('.tab').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -1699,6 +1797,8 @@ function init() {
 
   // 窗口状态要先拿到 —— 任务列表要靠它标出「等窗口」的那些
   applyView();
+  // 模型候选要跑一次本机 CLI 的 --help，和项目加载并行、不阻塞首屏
+  loadModelOptions().catch(() => {});
   loadWindow().catch(() => {}).then(() => loadProjects()).then(() => {
     // 直接打开 #/assistant 时不用再挑任务，队列在后台照常加载
     if (currentView() === 'assistant') return;

@@ -54,7 +54,10 @@ class PiRuntime(AgentRuntime):
         session_id: str,
         context_dirs: Sequence[Path],
         resume: bool,
+        model: str | None = None,
     ) -> list[str]:
+        # Pi 的模型走 [pi].model（全局），项目级下拉目前只服务 CodeBuddy。
+        # 这里刻意忽略 model，避免把 CodeBuddy 的模型 id 塞给 Pi。
         cfg = self.config.pi
         cmd = [resolve_executable(cfg.binary), "--mode", "json", "--session-id", session_id]
         session_dir = self._session_dir()

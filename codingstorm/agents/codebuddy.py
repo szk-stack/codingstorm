@@ -44,6 +44,7 @@ class CodeBuddyRuntime(ClaudeRuntime):
         session_id: str,
         context_dirs: Sequence[Path],
         resume: bool,
+        model: str | None = None,
     ) -> list[str]:
         cfg = self.config.codebuddy
         cmd = [
@@ -81,8 +82,10 @@ class CodeBuddyRuntime(ClaudeRuntime):
         ]
         for d in context_dirs:
             cmd += ["--add-dir", str(d)]
-        if cfg.model:
-            cmd += ["--model", cfg.model]
+        # 项目级覆盖优先；没选就回落到 [codebuddy].model（可能为空 = CLI 默认）
+        effective_model = model or cfg.model
+        if effective_model:
+            cmd += ["--model", effective_model]
         if cfg.settings_file is not None:
             cmd += ["--settings", str(cfg.settings_file)]
         cmd += list(cfg.extra_args)

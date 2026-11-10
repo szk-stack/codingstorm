@@ -152,6 +152,9 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("tasks", "agent_id", "TEXT"),
     ("tasks", "stage", "TEXT"),
     ("tasks", "state_path", "TEXT"),
+    # 项目级模型覆盖：NULL = 跟随全局 [codebuddy].model。
+    # 目前只有 CodeBuddy 消费它，但列放在 projects 上，别的执行器以后要用也不用再迁移。
+    ("projects", "runtime_model", "TEXT"),
 )
 
 

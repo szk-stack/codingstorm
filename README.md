@@ -126,9 +126,17 @@ binary = "pi"
 
 [codebuddy]
 binary = "codebuddy"
-# 留空 = 用 CodeBuddy 自己的默认模型
-# model = "gpt-5"
+# 全局默认模型；项目可以在界面上单独覆盖
+# model = "deepseek-v4.1-flash"
+# 候选清单留空 = 自动从本机 `codebuddy --help` 解析
+# models = ["deepseek-v4.1-flash", "deepseek-v4-pro"]
 ```
+
+**CodeBuddy 的模型可以按项目选**：队列标题右侧的「模型」下拉（只对有效执行器为
+CodeBuddy 的项目显示），注册项目时也能预选。切换只影响该项目**之后启动**的任务，
+「跟随全局」就是上面的 `[codebuddy] model`。候选清单优先用 `[codebuddy] models`，
+否则启动服务时解析一次本机 `codebuddy --help`，都没成功才用内置常用列表 —— 所以
+CLI 升级出新模型后，重启服务下拉里就会出现，不用改平台代码。
 
 也可以只让某个项目换：注册时在「执行器」下拉里选，或者：
 
@@ -141,6 +149,10 @@ cs runtime demo pi          # 已有项目切换；codebuddy / claude / inherit
 ```bash
 curl -X PATCH http://127.0.0.1:8788/api/projects/<项目id> \
   -H 'content-type: application/json' -d '{"runtime":"pi"}'
+
+# CodeBuddy 项目还可以单独覆盖模型（null / 空串 = 跟随全局）
+curl -X PATCH http://127.0.0.1:8788/api/projects/<项目id>/model \
+  -H 'content-type: application/json' -d '{"model":"glm-5.3"}'
 ```
 
 三者语义已经对齐（每个任务一个 worktree、一条分支、同一套 diff / 批准 / 多轮对话），
@@ -398,6 +410,7 @@ cs schedule add demo "一次性迁移" --at "2026-12-01 02:00"
 地址就是服务地址（默认 http://127.0.0.1:8788/）。左右两栏：**左栏**是项目列表（带注册表单）和项目上下文编辑区，**右栏**从上到下是：执行窗口横幅、任务队列、定时任务面板、任务详情。
 
 - **执行窗口横幅**（启用窗口时才有）：显示当前开没开、还有多久开关，右边两个控件 —— 临时关闭窗口、以及当前项目的窗口例外。
+- **队列标题右侧两个下拉**：「执行器」和「模型」。模型下拉只在项目有效执行器为 CodeBuddy 时出现，切换只影响之后启动的任务；左栏项目名下面也会显示当前分支 / 执行器 / 模型。
 - **定时任务面板**：列出当前项目的定时任务，每条能「立即跑一次 / 停用 / 删除 / 看上一轮」。
 - 任务详情四个页签：**对话**（多轮往返）、**执行过程**（实时推送，工具调用渲染成可展开卡片）、**改动**（diff + 批准/丢弃按钮）、**阶段**（仅严格模式）。
 - **文件**：左栏项目上下文里有个「文件」页签，能直接浏览仓库内容，不用 clone 下来。上面可以在「主干」和「本次任务」之间切 —— 后者用提交 sha 定位，所以任务合并之后也还能看当时改成了什么样。
@@ -493,7 +506,8 @@ python -m codingstorm.app --config codingstorm.toml
 | `pi.model` | 空 | 留空用 Pi 自己的默认模型；支持 `provider/id` |
 | `pi.project_trust` | `ignore` | 不加载仓库里的 `.pi` 扩展与设置（无人值守更安全） |
 | `codebuddy.binary` | `codebuddy` | CodeBuddy CLI 的可执行文件名/路径 |
-| `codebuddy.model` | 空 | 留空用 CodeBuddy 自己的默认模型 |
+| `codebuddy.model` | 空 | CodeBuddy 全局默认模型；项目可在界面上单独覆盖 |
+| `codebuddy.models` | 空 | 模型下拉候选；留空自动解析本机 `codebuddy --help`，失败用内置常用列表 |
 | `codebuddy.permission_mode` | `bypassPermissions` | 该模式下额外加 `--dangerously-skip-permissions` |
 | `assistant.enabled` | `true` | 顶栏「助手」页开关 |
 | `assistant.url` | `http://127.0.0.1:8001` | 助手地址，iframe 直接嵌它 |
@@ -561,6 +575,8 @@ repos/              被调度的仓库。注册时留空 repo_path 就用这里�
 | POST | `/api/assistant/start` | 拉起助手进程；已在跑就直接返回，失败带原因 |
 | GET | `/api/projects/{id}` | 项目详情 |
 | PATCH | `/api/projects/{id}` | 切换项目执行器（`{"runtime": "claude"\|"pi"\|"codebuddy"\|null}`） |
+| PATCH | `/api/projects/{id}/model` | 切换项目模型覆盖（`{"model": "..."\|null}`，仅 CodeBuddy 消费） |
+| GET | `/api/runtime/models` | 模型下拉候选（`models / source / global_model / default_runtime`） |
 | GET / POST | `/api/projects/{id}/tasks` | 列出 / 提交任务 |
 | GET | `/api/tasks` | 列出任务（`?project_id=&status=`） |
 | GET | `/api/tasks/{id}` | 任务详情 |
@@ -607,7 +623,7 @@ repos/              被调度的仓库。注册时留空 repo_path 就用这里�
 
 ```bash
 pip install -e ".[dev]"
-pytest -q          # 365 项
+pytest -q          # 375 项
 ```
 
 代码在 `codingstorm/`：`api.py`（HTTP）、`scheduler.py`（并发、执行窗口、定时触发与生命周期）、`runner.py`（拉起子进程、tail 日志、看门狗）、`agents/`（执行器：Claude Code / Pi / CodeBuddy 的命令行与事件翻译）、`workspace.py`（worktree 与合并）、`context.py`（上下文三层）、`agent_state.py`（严格模式状态机）、`timing.py`（窗口与定时规则的时间计算，纯函数）、`store.py` + `db.py`（数据层）、`cli.py`（`cs`）、`static/`（无构建步骤的前端）。

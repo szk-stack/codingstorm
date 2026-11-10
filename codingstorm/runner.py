@@ -138,13 +138,14 @@ class Runner:
         context_dir: Path | None,
         resume: bool = False,
         context_dirs: Sequence[Path] | None = None,
+        model: str | None = None,
     ) -> list[str]:
         # 保留旧的单目录参数，不打破已有调用方
         dirs = list(context_dirs) if context_dirs is not None else (
             [context_dir] if context_dir is not None else []
         )
         return self.runtime.build_command(
-            prompt, session_id=session_id, context_dirs=dirs, resume=resume
+            prompt, session_id=session_id, context_dirs=dirs, resume=resume, model=model
         )
 
     # ---------- 主流程 ----------
@@ -163,6 +164,7 @@ class Runner:
         origin: str = "task",
         resume: bool = False,
         runtime: str | None = None,
+        runtime_model: str | None = None,
     ) -> RunOutcome:
         cfg = self.config
         log_path = cfg.task_log_path(project_name, task_id)
@@ -179,7 +181,8 @@ class Runner:
             [context_dir] if context_dir is not None else []
         )
         cmd = run_runtime.build_command(
-            prompt, session_id=session_id, context_dirs=dirs, resume=resume
+            prompt, session_id=session_id, context_dirs=dirs,
+            resume=resume, model=runtime_model,
         )
         outcome = RunOutcome(session_id=session_id)
         run = run_runtime.new_run(outcome)

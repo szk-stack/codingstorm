@@ -51,11 +51,19 @@ class ProjectCreate(BaseModel):
     # 执行器。null / 空串 = 跟随全局 [runtime].default。
     # 绑定在项目上而不是任务上：一个项目的代码风格和约束是固定的，执行器不该每条任务换。
     runtime: Literal["claude", "pi", "codebuddy"] | None = None
+    # 项目级模型覆盖（目前只有 CodeBuddy 用）。null / 空串 = 跟随全局 [codebuddy].model。
+    # 允许先选好再切执行器：执行器不是 codebuddy 时这个字段只是存着、不生效。
+    runtime_model: str | None = None
 
     @field_validator("runtime", mode="before")
     @classmethod
     def _blank_runtime_is_inherit(cls, value: object) -> object:
         # 表单里「跟随全局」提交的是空串，别让它变成 422
+        return value or None
+
+    @field_validator("runtime_model", mode="before")
+    @classmethod
+    def _blank_model_is_inherit(cls, value: object) -> object:
         return value or None
 
     @field_validator("name")
@@ -165,6 +173,18 @@ class ProjectRuntimeIn(BaseModel):
         return value or None
 
 
+class ProjectModelIn(BaseModel):
+    """切换项目模型覆盖（目前只对 CodeBuddy 生效）。null = 跟随全局。"""
+
+    model: str | None = None
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _blank_model_is_inherit(cls, value: object) -> object:
+        # 下拉里「跟随全局」是空串，别让它变成一个空模型参数
+        return value or None
+
+
 class ProjectOut(BaseModel):
     id: str
     name: str
@@ -174,6 +194,8 @@ class ProjectOut(BaseModel):
     created_at: str
     # NULL = 跟随全局 [runtime].default
     runtime: str | None = None
+    # NULL = 跟随全局 [codebuddy].model；仅 CodeBuddy 执行器消费
+    runtime_model: str | None = None
     # NULL = 走全局窗口；见 timing.WindowOverride
     window_override: str | None = None
 

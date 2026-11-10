@@ -180,6 +180,9 @@ class CodeBuddyConfig(BaseModel):
     binary: str = "codebuddy"
     permission_mode: str = "bypassPermissions"
     model: str | None = None
+    # 前端模型下拉的候选清单。留空 = 自动从本机 `codebuddy --help` 解析，
+    # 解析失败再用 model_catalog.FALLBACK_MODELS。想把可选范围收窄就在这里写。
+    models: list[str] = Field(default_factory=list)
     # 由 GuardInstaller 生成，只含 PreToolUse hook（不混入 Claude 的 provider env）
     settings_file: Path | None = None
     extra_args: list[str] = Field(default_factory=list)

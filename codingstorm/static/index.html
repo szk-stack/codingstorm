@@ -44,6 +44,9 @@
             <option value="pi">Pi</option>
             <option value="codebuddy">CodeBuddy</option>
           </select>
+          <select name="runtime_model" title="模型：仅执行器为 CodeBuddy 时生效">
+            <option value="">模型：跟随全局</option>
+          </select>
           <button type="submit">注册</button>
         </form>
       </details>
@@ -118,6 +121,9 @@
           <option value="claude">Claude Code</option>
           <option value="pi">Pi</option>
           <option value="codebuddy">CodeBuddy</option>
+        </select>
+        <select id="project-model" class="runtime-select" title="本项目新任务的模型；只影响之后启动的任务，仅 CodeBuddy 生效" hidden>
+          <option value="">模型：跟随全局</option>
         </select>
       </div>
       <ul id="tasks" class="list tasks"></ul>

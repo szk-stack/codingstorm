@@ -56,8 +56,10 @@ default = "codebuddy"
 
 [codebuddy]
 binary = "codebuddy"
-# 留空 = 用 CodeBuddy 自己的默认模型
-# model = "gpt-5"
+# 全局默认模型；项目可以在界面上单独覆盖
+# model = "deepseek-v4.1-flash"
+# 下拉候选清单。留空 = 解析本机 `codebuddy --help` 的 Currently supported 列表
+# models = ["deepseek-v4.1-flash", "deepseek-v4-pro", "glm-5.3"]
 # 透传参数，给 CLI 升级后新增的开关用
 extra_args = []
 ```
@@ -69,6 +71,35 @@ cs runtime demo codebuddy
 ```
 
 界面注册项目时也可以直接选「CodeBuddy」。
+
+### 3.1 按项目选模型
+
+模型不是只有全局一个值：`projects.runtime_model` 存项目级覆盖，NULL = 跟随
+`[codebuddy].model`。前端在队列标题右侧放一个「模型」下拉（只对有效执行器为
+CodeBuddy 的项目显示），注册项目时也能预选。切换只影响**之后启动**的任务 ——
+已拉起的进程用的是启动时的命令行参数，不会中途改。
+
+数据流：
+
+```
+GET /api/runtime/models  →  候选清单（config / cli / builtin）
+PATCH /api/projects/{id}/model  →  projects.runtime_model
+scheduler._execute_task  →  runner.run(runtime_model=...)
+  →  CodeBuddyRuntime.build_command(..., model=...)  →  --model <id>
+```
+
+**为什么单独开一个 PATCH 端点**：模型下拉的「跟随全局」提交 null，若和 `runtime`
+共用一次 UPDATE 会把执行器一起清掉。
+
+**为什么候选清单从 `--help` 读**：模型 id 由 CLI 版本决定，硬编码很快过期。
+`model_catalog._from_cli()` 跑一次 `codebuddy --help`，正则抠出
+`Currently supported: (...)`，进程内缓存一次，重启服务刷新。没装 CLI / 格式变了 /
+超时（8 秒）就退回 `FALLBACK_MODELS`；也可以在 `[codebuddy] models` 里写死自己的
+清单，优先级最高。解析放在 `asyncio.to_thread` 里，不堵事件循环。
+
+**其他执行器不受影响**：`AgentRuntime.build_command` 新增的 `model` 参数只有
+CodeBuddy 消费，Claude / Pi 刻意忽略 —— 它们的模型 id 和 CodeBuddy 不是一套。
+变更记录沉淀（oneshot 调用）也仍用全局模型。
 
 ## 4. 边界
 

@@ -280,6 +280,26 @@ CodeBuddy 的 headless 事件流与 Claude Code 同构（init → assistant → 
 切换执行器时，如果任务还没结束：工作区会复用（改动不丢），但会开新会话并重新注入
 完整上下文——旧 CLI 的会话文件新 CLI 打不开。
 
+**CodeBuddy 的模型可以按项目选**：队列标题右侧的「模型」下拉只在项目的有效执行器是
+CodeBuddy 时出现，注册项目时也能预选。选完只影响该项目**之后启动**的任务，正在跑的
+那条不受影响；「跟随全局」就是 `[codebuddy].model`。左栏项目名下面会显示当前模型。
+
+候选清单的来源按顺序是：`[codebuddy] models` 里写死的清单 → 本机
+`codebuddy --help` 里的 `Currently supported: (...)` → 内置常用列表。CLI 装了就没必
+要自己维护名单，升级出新模型后重启服务即可；本机没装 CLI 也不用担心，下拉仍有一份兜底。
+想知道这次用的是哪份来源，看 `GET /api/runtime/models` 的 `source` 字段
+（`config` / `cli` / `builtin`）。
+
+手动改模型覆盖：
+
+```bash
+curl -X PATCH http://127.0.0.1:8788/api/projects/<项目id>/model \
+  -H 'content-type: application/json' -d '{"model":"glm-5.3"}'
+```
+
+> 注意模型 id 是 CodeBuddy 的，不是 DeepSeek / Claude 的；给 Claude / Pi 项目选了也不会生效，
+> 所以这两种项目的下拉是隐藏的。
+
 ### 5.3 多轮对话
 
 ```bash

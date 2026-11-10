@@ -126,8 +126,14 @@ extra_args = []
 binary = "codebuddy"
 # 非交互写文件/跑命令必须跳过权限确认；边界仍由下面的 guard hook 负责
 permission_mode = "bypassPermissions"
-# 留空用 CodeBuddy 自己的默认模型
-# model = "gpt-5"
+# 留空用 CodeBuddy 自己的默认模型。
+# 这里是**全局默认值**；每个项目可以在界面「模型」下拉里单独覆盖，
+# 注册项目时也能预选。留空 = 跟随这里。
+# model = "deepseek-v4.1-flash"
+# 模型下拉的候选清单。留空（默认）= 自动解析本机 `codebuddy --help` 里的
+# "Currently supported: (...)"，CLI 不可用或格式变了才回退到内置常用列表。
+# 想把可选范围收窄（或本机没装 CLI）就在这里写死：
+# models = ["deepseek-v4.1-flash", "deepseek-v4-pro", "glm-5.3"]
 # settings_file 由程序自动接管（只含 hook，不混入 [claude.env]）
 # 透传参数，给 CLI 升级后新增的开关用
 extra_args = []

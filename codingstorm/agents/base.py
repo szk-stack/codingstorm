@@ -192,8 +192,13 @@ class AgentRuntime(ABC):
         session_id: str,
         context_dirs: Sequence[Path],
         resume: bool,
+        model: str | None = None,
     ) -> list[str]:
-        """构造一次任务执行的命令行。"""
+        """构造一次任务执行的命令行。
+
+        `model` 是项目级覆盖（None = 用执行器自己的全局配置）。不是每个执行器
+        都有可切换的模型，忽略它的实现要在注释里说清楚，别静默吞掉。
+        """
 
     @abstractmethod
     def new_run(self, outcome: RunOutcome) -> AgentRun:

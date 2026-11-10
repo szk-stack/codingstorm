@@ -41,7 +41,10 @@ class ClaudeRuntime(AgentRuntime):
         session_id: str,
         context_dirs: Sequence[Path],
         resume: bool,
+        model: str | None = None,
     ) -> list[str]:
+        # Claude Code 的模型由 [claude.env] / ~/.claude/settings.json 决定，
+        # 项目级下拉只对 CodeBuddy 生效，这里刻意不用 model。
         cfg = self.config
         cmd = [
             resolve_executable(cfg.claude.binary),

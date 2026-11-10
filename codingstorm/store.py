@@ -46,9 +46,13 @@ class Store:
     async def create_project(self, spec: ProjectCreate) -> ProjectOut:
         pid = new_id()
         await self.db.execute(
-            "INSERT INTO projects (id, name, repo_path, target_branch, runtime, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (pid, spec.name, spec.repo_path, spec.target_branch, spec.runtime, utcnow()),
+            "INSERT INTO projects"
+            " (id, name, repo_path, target_branch, runtime, runtime_model, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                pid, spec.name, spec.repo_path, spec.target_branch,
+                spec.runtime, spec.runtime_model, utcnow(),
+            ),
         )
         row = await self.db.query_one("SELECT * FROM projects WHERE id = ?", (pid,))
         return _project_out(row)
@@ -76,6 +80,18 @@ class Store:
     async def set_project_runtime(self, project_id: str, runtime: str | None) -> ProjectOut:
         await self.db.execute(
             "UPDATE projects SET runtime = ? WHERE id = ?", (runtime, project_id)
+        )
+        project = await self.get_project(project_id)
+        assert project is not None
+        return project
+
+    async def set_project_runtime_model(
+        self, project_id: str, model: str | None
+    ) -> ProjectOut:
+        """单独一个 setter：模型下拉的「跟随全局」提交 null，
+        不能和执行器字段共用一次 UPDATE，否则会把 runtime 一起清掉。"""
+        await self.db.execute(
+            "UPDATE projects SET runtime_model = ? WHERE id = ?", (model, project_id)
         )
         project = await self.get_project(project_id)
         assert project is not None
@@ -593,6 +609,7 @@ def _project_out(row: sqlite3.Row) -> ProjectOut:
         enabled=bool(row["enabled"]),
         created_at=row["created_at"],
         runtime=row["runtime"] if "runtime" in keys else None,
+        runtime_model=row["runtime_model"] if "runtime_model" in keys else None,
         window_override=row["window_override"] if "window_override" in keys else None,
     )
 

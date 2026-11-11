@@ -22,7 +22,13 @@ from codingstorm.store import Store
 
 
 @pytest.fixture
-def env(tmp_path: Path):
+def env(tmp_path: Path, monkeypatch):
+    # 本机装了 CodeBuddy CLI 时 resolve_executable() 会把它解析成 .EXE 的绝对路径，
+    # 这组测试只关心命令参数，固定成裸命令名，别让结果取决于开发机的 PATH。
+    monkeypatch.setattr(
+        "codingstorm.agents.codebuddy.resolve_executable",
+        lambda binary, **kwargs: binary,
+    )
     cfg = Config(root=tmp_path / "root", runtime=RuntimeConfig(default="codebuddy"))
     cfg.ensure_dirs()
     db = Database(tmp_path / "test.db")

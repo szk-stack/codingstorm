@@ -174,8 +174,11 @@ guard_allow = []
 #
 # 它是**独立进程**（仓库里的 `assistant/` 目录，不是另一个项目），主服务只负责
 # 探测和按需拉起；崩了不影响任务队列，重启任务队列也不会打断正在写的那轮对话。
-# 助手的工具白名单只有四个：list_projects / create_task / get_project_context /
-# list_tasks —— 它能建任务，但不能改代码、不碰 shell，也不等待任务执行。
+# 助手有两类工具：平台工具 list_projects / create_task / get_project_context /
+# list_tasks（建任务后立即返回，不等待执行），以及本地工作区工具
+# list_dir / read_file / write_file / edit_file / exec_command / view_image /
+# screenshot。后者受页面「工作区」限制，越界会被拒绝；「完整权限」默认关闭。
+# ★ 命令黑名单只防手滑，不是安全沙箱：8001 只监听本机，别映射到公网。
 [assistant]
 enabled = true
 # 助手首页。iframe 直接嵌它，任务链接也用它拼。

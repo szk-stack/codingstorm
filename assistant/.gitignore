@@ -7,4 +7,5 @@ api_key.json
 config.py
 uploads/
 sandbox/
+.screenshots/
 *.log

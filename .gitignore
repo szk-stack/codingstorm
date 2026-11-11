@@ -49,3 +49,6 @@ api_key.json
 # 助手 sidecar 的本地配置：双保险（其余忽略规则见 assistant/.gitignore）。
 # 这个文件可能放 API Key，即使子目录的 .gitignore 被删也不能进仓库。
 /assistant/config.py
+
+# 助手把工作区选到仓库根时，截图会落在根目录的 .screenshots/
+.screenshots/

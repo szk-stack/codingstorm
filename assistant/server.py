@@ -45,6 +45,18 @@ class ChatHandler(BaseHTTPRequestHandler):
     # 而不是等整个回答都准备好了才一次性发出去。
     protocol_version = "HTTP/1.1"
 
+    def handle(self):
+        """吞掉 keep-alive 连接被客户端提前关掉时的断连异常。
+
+        HTTP/1.1 + ThreadingHTTPServer 下，客户端（主服务探活、预览面板关闭）
+        随时可能先断开；socketserver 默认会把这打成一整段 traceback。它不是
+        服务端故障，静默掉，别把启动日志刷花。只吞断连类，别的异常照常抛。
+        """
+        try:
+            super().handle()
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            pass
+
     def do_GET(self):
         """浏览器"读取"时走这里。"""
         # 防御：万一有客户端给 GET 带了请求体，先把它读掉——
@@ -500,7 +512,12 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            # 客户端提前断开很常见（主服务探活超时、预览面板被关掉），
+            # 不是服务端故障，别每次都往日志里刷一整段 traceback。
+            pass
 
     def log_message(self, fmt, *args):
         # 让终端里的日志更简洁一点（覆盖默认的格式）

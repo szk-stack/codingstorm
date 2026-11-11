@@ -333,13 +333,59 @@ def chat_stream(messages, workspace=None, compaction=None, skip_persona=False,
             if not pending_calls:
                 break    # 模型正常答完了 → 收工
 
-            # 轮次计数：MAX_TOOL_ROUNDS 为 0 = 不限制（默认）——让模型自己
-            # 决定什么时候收工，和 Pi / dsh 的做法一致；
-            # 配了正数才当保险丝用（防死循环烧钱）。
-            # ★ 注意：撞上限是"直接截断"，模型没机会说"我没做完"——
-            #   这个行为等闸门方案定了再改（现在默认 0，走不到这里）。
+            # 轮次计数：MAX_TOOL_ROUNDS 为 0 = 不限制——让模型自己决定什么时候
+            # 收工；配了正数才当保险丝用（防死循环烧钱）。
+            # ★ 撞上限不能直接 break：那会让用户看到一条空气泡，状态还是 ok。
+            #   这里补一次「收尾请求」——不带工具，逼模型基于已读到的信息给结论。
             if config.MAX_TOOL_ROUNDS > 0 and used_rounds >= config.MAX_TOOL_ROUNDS:
-                print(f"[警告] 工具调用达到上限（{config.MAX_TOOL_ROUNDS} 轮），停止继续执行")
+                print(f"[警告] 工具调用达到上限（{config.MAX_TOOL_ROUNDS} 轮），进入收尾")
+                closing_messages = work_messages + [{
+                    "role": "user",
+                    "content": (
+                        f"（系统提示）本轮工具调用已达上限（{config.MAX_TOOL_ROUNDS} 轮），"
+                        "现在不能再调用任何工具。请直接基于已经读到的内容回答用户："
+                        "先给结论；如果信息还不够，明确说清还缺什么、建议接下来看哪几个文件。"
+                    ),
+                }]
+                closing_started = time.time()
+                closing_text = ""
+                closing_usage = None
+                try:
+                    for event in llm.chat_stream(closing_messages, tools=None):
+                        if event["type"] == "text":
+                            closing_text += event["text"]
+                            text_pieces.append(event["text"])
+                            yield event
+                        elif event["type"] == "usage":
+                            closing_usage = tracing.add_usage(closing_usage, event["usage"])
+                except Exception as exc:
+                    # 收尾请求本身失败也要留一句话，别让用户对着空气泡猜
+                    fallback = f"（工具轮次已用完，收尾总结失败：{exc}）"
+                    text_pieces.append(fallback)
+                    yield {"type": "text", "text": fallback}
+                if closing_text.strip() == "":
+                    fallback = (
+                        "（工具轮次已用完，我没能给出总结。"
+                        "可以让我接着看具体某几个文件，或者把需求说得更窄一点再试。）"
+                    )
+                    text_pieces.append(fallback)
+                    yield {"type": "text", "text": fallback}
+                closing_record = {
+                    "index": len(trace["rounds"]),
+                    "request": {
+                        "messages": [_slim_message(m) for m in closing_messages],
+                        "tools": [],
+                        "message_count": len(closing_messages),
+                    },
+                    "reasoning": "",
+                    "text": closing_text,
+                    "tool_calls": [],
+                    "duration_ms": int((time.time() - closing_started) * 1000),
+                }
+                if closing_usage:
+                    closing_record["usage"] = closing_usage
+                    trace["usage"] = tracing.merge_usage(trace.get("usage"), closing_usage)
+                trace["rounds"].append(closing_record)
                 break
             used_rounds += 1
 

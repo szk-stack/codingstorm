@@ -77,6 +77,10 @@ Key 优先级：`MYWHEEL_API_KEY` > `api_key.json` > `config.py`。
 当前开关：`ENABLE_EXEC = True`、`ENABLE_VISION = True`、`ENABLE_SUBAGENT = False`、
 `ENABLE_KB = False`、`MAX_TOOL_ROUNDS = 12`（派发前调研可能要多轮，留上限防死循环）。
 `SYSTEM_PROMPT` 明确规定「开发需求 → `create_task` 唯一出口」，改动人设时别把这条删掉。
+
+轮次撞上限时**不会静默截断**：`engine.py` 会追加一条系统提示，用「不带工具」的方式
+再请求一次，让模型基于已读内容给结论；收尾请求失败、或模型仍然没输出时，才回一句
+兜底文案。以前这里是直接 `break`，用户只会看到一条空气泡（`status=ok`、`final_text` 为空）。
 想退回「只读 + 建任务」，把 `ENABLE_EXEC` / `ENABLE_VISION` 关掉，并从 `tools/` 移走
 那 7 个本地工具文件即可 —— 平台工具不依赖它们。
 

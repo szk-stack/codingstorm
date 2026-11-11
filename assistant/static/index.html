@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>codingstorm · 本地助手</title>
+<title>codingstorm · 需求分析师</title>
 <style>
   /* ============================================================
      设计 token 体系（myWheel 的设计地基 · "纸墨"版）
@@ -1216,7 +1216,7 @@
       <div id="imageTray" class="hidden"></div>
       <div id="inputRow">
         <button id="imgBtn" title="添加图片（也可以直接 Ctrl+V 粘贴截图）">图片</button>
-        <textarea id="input" rows="3" placeholder="说一句要做什么，比如：给 demo 项目加个暂停按钮 / 读一下 README.md / 跑一遍测试。Enter 发送，Shift+Enter 换行；也可粘贴截图"></textarea>
+        <textarea id="input" rows="3" placeholder="说一句要做什么，比如：给 demo 项目加个暂停按钮。我会先调研代码再派发任务，不直接改代码。Enter 发送，Shift+Enter 换行；也可粘贴截图"></textarea>
         <button id="btn">发送</button>
       </div>
       <!-- 隐藏的文件选择器（点「图片」按钮时触发） -->
@@ -2295,7 +2295,7 @@ function renderMessages() {
 
   // 空会话 → 显示一句欢迎语
   if (!conv || conv.messages.length === 0) {
-    addBubble("ai", "你好，我是 codingstorm 的本地助手。既能把需求整理成任务丢进队列（后台执行、不用等），也能直接在你选的工作区里看文件、改文件、跑命令、看图片和截图。想动本机文件时，先在输入框上方选好工作区。");
+    addBubble("ai", "你好，我是 codingstorm 的需求分析师。说需求时我会先读代码、看目录、看图片把现状摸清楚，再整理成一条结构化任务丢进队列 —— 我不会直接改你的代码，改动交给执行器在独立工作区里做，由你审 diff 决定要不要。想让我调研某个仓库，先在输入框上方选好工作区。");
   }
 
   // 正在等回复 → 显示"思考中…"（把元素引用记下来，流式回答会直接改它的文字）

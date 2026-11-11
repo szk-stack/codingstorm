@@ -16,7 +16,7 @@ DESCRIPTION = {
     "name": "edit_file",
     "description": (
         "修改已有文件：把 old_text 替换成 new_text。"
-        "old_text 必须和文件里的内容一模一样、且在文件中只出现一次，否则会报错让你重试。"
+        "old_text 必须和文件里的内容一模一样、且在文件中只出现一次，否则会报错让你重试。" "注意：codingstorm 助手里开发需求一律用 create_task 派发，不要用它实现需求或改动仓库代码；仅用户明确要求的纯本地文件操作才可用。"
     ),
     "parameters": {
         "type": "object",

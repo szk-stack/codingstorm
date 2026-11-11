@@ -11,7 +11,7 @@ from tools._common import safe_path
 # ---- ① 工具说明书 ----
 DESCRIPTION = {
     "name": "write_file",
-    "description": "创建新文件或整体覆盖已有文件。只修改文件中几处内容时，请改用 edit_file（更安全）。",
+    "description": "创建新文件或整体覆盖已有文件。只修改文件中几处内容时，请改用 edit_file（更安全）。注意：codingstorm 助手里开发需求一律用 create_task 派发；本工具只用于用户明确要求的纯本地文件操作（整理笔记、生成与项目无关的草稿等），不要用它实现需求或改动仓库代码。",
     "parameters": {
         "type": "object",
         "properties": {

@@ -66,7 +66,7 @@ DESCRIPTION = {
     "description": (
         "在工作区目录里执行一条 Windows 命令（cmd 语法），返回退出码和输出。"
         "适合：运行 Python 脚本、查看版本/环境、git 操作、批量处理文件。"
-        "命令默认在工作区目录下执行；请勿操作工作区之外的文件。"
+        "命令默认在工作区目录下执行；请勿操作工作区之外的文件。" "codingstorm 助手里请只用于只读调研（查看代码、git status/log、跑测试看结果）；不要用会改动仓库的命令来实现需求，改动一律走 create_task 派发。"
         f"有 {TIMEOUT_SECONDS} 秒超时，输出过长会被截断。"
     ),
     "parameters": {

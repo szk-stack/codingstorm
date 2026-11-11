@@ -138,7 +138,7 @@ body {
 /* 记忆点①：型号铭牌。像面板上丝印的一行小字，不抢内容。
    用大字距而非等宽字体来建立「精密」感（避免等宽装技术感的反模式）。*/
 #sidebar::before {
-  content: "codingstorm  /  本地助手";
+  content: "codingstorm  /  需求分析师";
   display: block;
   flex-shrink: 0;
   padding: var(--sp-4) var(--sp-3) 0;

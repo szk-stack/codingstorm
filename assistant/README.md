@@ -1,4 +1,4 @@
-# assistant/ — codingstorm 本地助手
+# assistant/ — codingstorm 需求分析师
 
 这是 codingstorm 仓库里的**助手 sidecar**：一个独立进程（默认 `127.0.0.1:8001`），
 被主服务用 iframe 嵌进顶栏「助手」页。代码来自 `D:\project\朴素agent`（myWheel）的
@@ -10,22 +10,22 @@
 
 ## 它做什么
 
-**两类能力，人设按用户措辞选择，拿不准会先问一句：**
+**单一职责：把需求整理成任务并派发。本地代码工具是「调研用的眼睛」，不是「实现用的手」。**
 
-A. 投递开发任务（codingstorm 主流程）
+- 派发前用 `list_dir` / `read_file` / `exec_command`（只读）/ `view_image` / `screenshot`
+  读代码、看目录、看图片，弄清现有实现、涉及的文件路径、依赖与约束，别凭印象猜；
+- 把调研结论写进任务正文（目标 / 范围 / 验收标准 / 约束与假设），让任务具体、可验收；
+- 调一次 `create_task` 把任务加入队列，**立即返回** `task_id`，不等待、不轮询执行；
+- ⚠️ **硬性规则**：开发需求（加功能 / 改行为 / 修 bug / 重构 / 补测试）的唯一出口是
+  `create_task`。不许用 `write_file` / `edit_file`，也不许用会改动仓库的命令去把需求做掉，
+  哪怕只改一行。改动交给执行器在独立 worktree 里做，由用户审 diff 决定合不合。
 
-- 把自然语言需求整理成结构化任务（目标 / 范围 / 验收标准 / 约束与假设）；
-- `create_task` 把任务加入队列，**立即返回** `task_id`，不等待、不轮询执行；
-- 平台工具：`list_projects`、`get_project_context`、`create_task`、`list_tasks`。
+共 **11 个工具**：4 个平台工具（`list_projects` / `get_project_context` / `create_task` /
+`list_tasks`）+ 7 个本地工具。`write_file` / `edit_file` 只在用户明确要求的纯本地文件
+操作（整理笔记、与项目无关的草稿）里才用，拿不准就按开发需求派发。人设写在
+`SYSTEM_PROMPT`，三个写/命令工具的说明书里也各加了一句同样的约束。
 
-B. 直接在本机工作区里动手
-
-- `list_dir` / `read_file` / `write_file` / `edit_file`：列目录、读写改文件；
-- `exec_command`：在工作区里跑一条 Windows 命令（60 秒超时、输出截断）；
-- `view_image` / `screenshot`：看图片，或用 Edge 无头模式截图后再看；
-- 输入框可以粘贴/上传图片（`ENABLE_VISION`）。
-
-共 **11 个工具**。回复里的链接统一新标签页打开，避免把整个应用装进 iframe。
+回复里的链接统一新标签页打开，避免把整个应用装进 iframe。
 
 **仍未还原**：子代理 `spawn_agent`、知识库 RAG / 向量检索、B站登录与视频搜索/下载/转写，
 以及原项目的 CLI、Docker、评测脚本。
@@ -41,7 +41,7 @@ B. 直接在本机工作区里动手
 - `exec_command` 的危险命令黑名单只是「防手滑」，**不是安全沙箱**：它跑的是真实
   shell，cwd 锁在工作区，但命令本身能 `cd ..` 或用绝对路径。**助手页等于一个能执行
   本机命令的网页**，8001 只监听 `127.0.0.1`，别把它映射/代理到公网或不可信网络。
-- 默认工作区是新会话自动建的沙箱目录；想操作主项目，把工作区选成仓库根目录。
+- 默认工作区是新会话自动建的沙箱目录；想让它调研主项目代码，把工作区选成仓库根目录。
 
 ## 启动
 
@@ -75,7 +75,8 @@ start-assistant.bat
 
 Key 优先级：`MYWHEEL_API_KEY` > `api_key.json` > `config.py`。
 当前开关：`ENABLE_EXEC = True`、`ENABLE_VISION = True`、`ENABLE_SUBAGENT = False`、
-`ENABLE_KB = False`、`MAX_TOOL_ROUNDS = 12`（文件/命令可能要多轮，留上限防死循环）。
+`ENABLE_KB = False`、`MAX_TOOL_ROUNDS = 12`（派发前调研可能要多轮，留上限防死循环）。
+`SYSTEM_PROMPT` 明确规定「开发需求 → `create_task` 唯一出口」，改动人设时别把这条删掉。
 想退回「只读 + 建任务」，把 `ENABLE_EXEC` / `ENABLE_VISION` 关掉，并从 `tools/` 移走
 那 7 个本地工具文件即可 —— 平台工具不依赖它们。
 
@@ -104,6 +105,11 @@ python selftest.py
 - `python selftest.py` → 11 个工具，白名单正确；
 - 「现在有哪些项目？」→ 调 `list_projects`，流式返回项目表并追问在哪个项目做；
 - 「给 demo 项目加一个 HEALTH.md…」→ 只调一次 `create_task`，返回 `status=queued`
-  + `task_id` + 任务链接，助手随即回复「已加入队列」且不查进度。
+  + `task_id` + 任务链接，助手随即回复「已加入队列」且不查进度；
+- **需求场景行为验证**（工作区里放一个 `app.py`，要求加 `pause()`，并故意加一句
+  「顺便直接帮我改掉也行」）→ 工具序列
+  `list_projects → list_dir → read_file → get_project_context → create_task`，
+  **没有调用 `write_file` / `edit_file`**，`create_task` 恰好一次；调研结论被写进
+  验收标准（「app.py 只有两行、没有状态变量，需定义清楚暂停含义」）。
 
 核心代码按其 `LICENSE` 使用。这是裁剪副本，不是原项目的替代品。
